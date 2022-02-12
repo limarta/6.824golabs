@@ -125,17 +125,19 @@ func Worker(mapf func(string, string) []KeyValue,
 		} else if state == MapTask {
 			runMap(&worker, mapf)
 
-			// quit := make(chan bool, 1)
-			// go func() {
-			// 	MarkMapDone(&worker)
-			// 	quit <- true
-			// }()
-			// select {
-			// case <-quit:
-			// 	fmt.Println("Informed coordinator successfully of completed map")
-			// case <-time.After(time.Second * 10):
-			// 	fmt.Print("Could not inform coordinator", worker.id)
-			// }
+			quit := make(chan bool, 1)
+			reply := DoneSignalReply{}
+			go func() {
+				reply = MarkMapDone(&worker)
+				quit <- true
+				defer close(quit)
+			}()
+			select {
+			case <-quit:
+				fmt.Println("Informed coordinator successfully of completed map with reply ", reply)
+			case <-time.After(time.Second * 10):
+				fmt.Print("Could not inform coordinator", worker.id)
+			}
 			worker.state = Kill
 
 		} else if state == ReduceTask {
@@ -162,7 +164,6 @@ func runMap(worker *WorkerStruct, mapf func(string, string) []KeyValue) {
 	file.Close()
 	kva := mapf(filename, string(content)) // Array of KeyValue type
 	buckets := make(map[int]([]KeyValue))
-
 	for _, pair := range kva {
 		partition := ihash(pair.Key) % NReduce
 		if buckets[partition] == nil {
@@ -173,6 +174,7 @@ func runMap(worker *WorkerStruct, mapf func(string, string) []KeyValue) {
 	}
 	fmt.Println("Built buckets for worker ", worker.id)
 
+	// Parallelize this for multiple writes
 	for i := 0; i < NReduce; i++ {
 		pName := fmt.Sprintf("mr-%d-%d", worker.id, i)
 		tmpfile, err := ioutil.TempFile(".", pName)
@@ -218,7 +220,7 @@ func RequestTask(worker *WorkerStruct) WorkerReply {
 	return reply
 }
 
-func MarkMapDone(worker *WorkerStruct) { // Informs coordinator of completed map task
+func MarkMapDone(worker *WorkerStruct) DoneSignalReply { // Informs coordinator of completed map task
 	partitionFiles := make([]string, NReduce)
 	for i := 0; i < NReduce; i++ {
 		partitionFiles[i] = fmt.Sprintf("mr-%d-%d", worker.id, i)
@@ -227,11 +229,10 @@ func MarkMapDone(worker *WorkerStruct) { // Informs coordinator of completed map
 	args := DoneSignalArgs{Id: worker.id, Filename: worker.mapFile, PartitionFiles: partitionFiles}
 	reply := DoneSignalReply{}
 	ok := call("Coordinator.MarkMapDone", &args, &reply)
-	if ok {
-
-	} else {
+	if !ok {
 		log.Fatalf("Could not inform coordinator of completion")
 	}
+	return reply
 }
 
 //

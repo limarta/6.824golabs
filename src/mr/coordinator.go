@@ -50,6 +50,7 @@ func (c *Coordinator) GetId(args *WorkerArgs, reply *WorkerReply) error {
 func (c *Coordinator) GetTask(args *WorkerArgs, reply *WorkerReply) error {
 	workerId := args.Id
 	reply.Id = workerId
+	// add lock for c.phase
 	if c.phase == MapPhase {
 		// fmt.Println("Coordinator searching a map task for worker")
 
@@ -115,6 +116,13 @@ func (c *Coordinator) MarkMapDone(args *DoneSignalArgs, reply *DoneSignalReply) 
 
 	// TODO: assert that this work was actually worker
 	c.mapsCompletedLock.Lock()
+	if c.mapsCompleted[filename] != 0 { // Was previously completed. Ignore this worker
+		fmt.Println("Repeated map work: ", filename, " by worker ", workerId)
+		reply.Id = workerId
+		reply.Recorded = true
+		c.mapsCompletedLock.Unlock()
+		return nil
+	}
 	c.mapsRunningLock.Lock()
 	if workers, ok := c.mapsRunning[filename]; ok {
 		// Remove filename from running map tasks (and associated workers)
@@ -124,19 +132,15 @@ func (c *Coordinator) MarkMapDone(args *DoneSignalArgs, reply *DoneSignalReply) 
 			log.Fatal("Worker was not responsible for completing this task")
 		}
 
-		if c.mapsCompleted[filename] != 0 {
-			// Was previously completed
-		} else {
-			// First time completed
-			c.mapsCompleted[filename] = workerId
-			partitionFiles := args.PartitionFiles
-			fmt.Println("Coordinator received partitions ", partitionFiles)
-		}
+		// First time completed
+		c.mapsCompleted[filename] = workerId
+		partitionFiles := args.PartitionFiles
+		fmt.Println("Coordinator received file ", filename, " with partitions ", partitionFiles)
 
-		fmt.Println("Before running for marked worker ", workerId, " ", c.mapsRunning)
+		// fmt.Println("Before running for marked worker ", workerId, " ", c.mapsRunning)
 		delete(c.mapsRunning, filename) // WARNING: NOP
-		fmt.Println("Update running for marked worker ", workerId, " ", c.mapsRunning)
-		fmt.Println("Updated completed map for marked worker ", workerId, " ", c.mapsCompleted)
+		// fmt.Println("Update running for marked worker ", workerId, " ", c.mapsRunning)
+		// fmt.Println("Updated completed map for marked worker ", workerId, " ", c.mapsCompleted)
 		reply.Recorded = true
 		reply.Id = workerId
 
