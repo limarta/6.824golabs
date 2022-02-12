@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
 
 type Phase int
@@ -37,37 +38,27 @@ type ReduceFile struct {
 	HashId int
 }
 
-// Your code here -- RPC handlers for the worker to call.
-
-//
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
-}
-
 func (c *Coordinator) GetId(args *WorkerArgs, reply *WorkerReply) error {
 	c.workerCountLock.Lock()
 	reply.Id = c.nextWorkerId
 	c.nextWorkerId += 1
+	fmt.Println("Finished giving ID ", c.nextWorkerId-1, " at ", time.Now())
 	c.workerCountLock.Unlock()
 	return nil
 }
 
 func (c *Coordinator) GetTask(args *WorkerArgs, reply *WorkerReply) error {
 	workerId := args.Id
-
+	reply.Id = workerId
 	if c.phase == MapPhase {
 		// fmt.Println("Coordinator searching a map task for worker")
 
+		completedMapPhase := true
 		c.mapsCompletedLock.Lock() // LOCK MAP COMPLETE
-		// fmt.Println(c.mapsCompleted)
 
 		for file, completion := range c.mapsCompleted {
 			if completion == 0 {
+				completedMapPhase = false
 				// fmt.Println("Coordinator examing file ", file, " with completion ", completion)
 
 				c.mapsRunningLock.Lock() // LOCK MAP RUNNING
@@ -75,23 +66,42 @@ func (c *Coordinator) GetTask(args *WorkerArgs, reply *WorkerReply) error {
 					c.mapsRunning[file] = make(map[int]bool)
 				}
 
-				// TODO: Check that worker doesn't already have a task
-				if _, ok := c.mapsRunning[file][workerId]; ok {
-					log.Fatal("This worker is doing this task: ", c.mapsRunning[file])
-				}
-				if len(c.mapsRunning[file]) > 1 {
-					fmt.Println("Encountered a worker with same map task: ", c.mapsRunning[file])
+				// for _, workerList := range c.mapsRunning { // Checks if worker already running task
+				// 	if _, ok := workerList[workerId]; ok {
+				// 		fmt.Println("Worker ", workerId, " already assigned to task")
+				// 	}
+				// }
+
+				if len(c.mapsRunning[file]) > 0 { // Currently policy is to assign one worker per task
+					fmt.Println("Worker ", workerId, " encountered workers ", c.mapsRunning[file], " with same map task")
+					c.mapsRunningLock.Unlock() // UNLOCK MAP RUNNING
+					continue
 				}
 				c.mapsRunning[file][workerId] = true
-				c.mapsRunningLock.Unlock() // UNLOCK MAP RUNNING
+
+				fmt.Println("Assigned worker ", workerId, " to file ", file)
 				reply.NewState = MapTask
 				reply.Filename = file
-				reply.Id = workerId
+				c.mapsRunningLock.Unlock() // UNLOCK MAP RUNNING
 				c.mapsCompletedLock.Unlock()
 				return nil
+			} else {
+				// fmt.Println("Going to next file for worker ", workerId)
 			}
 		}
 		c.mapsCompletedLock.Unlock() // UNLOCK MAP COMPLETE
+		fmt.Println("Worker ", workerId, " found no uncompleted map tasks")
+		reply.NewState = Idle
+
+		if completedMapPhase {
+			// Somehow transition without a data race with c.phase == MapTask
+		} else {
+			fmt.Println("More map tasks remaining but nothing to assign yet")
+		}
+
+		// No more map tasks
+		// TODO: Implmement reduce
+
 	} else if c.phase == ReducePhase {
 
 	}

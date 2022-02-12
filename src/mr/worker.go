@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -23,9 +24,10 @@ const (
 const NReduce int = 10
 
 type WorkerStruct struct {
-	id      int // Capitalize maybe
-	state   State
-	mapFile string
+	id         int // Capitalize maybe
+	state      State
+	mapFile    string
+	WorkerLock sync.Mutex
 }
 
 //
@@ -55,17 +57,21 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// Get ID for worker
 	ch := make(chan bool, 1)
-	defer close(ch)
+	reply := WorkerReply{}
 	go func() {
-		GetId(&worker)
+		reply = GetId(&worker)
 		ch <- true
+		defer close(ch)
 	}()
 	select {
 	case <-ch:
-		fmt.Println("Earned id ", worker.id)
+		worker.WorkerLock.Lock()
+		worker.id = reply.Id
+		worker.WorkerLock.Unlock()
 	case <-time.After(time.Second * 3):
 		fmt.Println("Could not reach master")
 	}
+	fmt.Println("Final id: ", worker.id, time.Now())
 
 	// Worker tasks:
 	// Thread 1: Process map/reduce task
@@ -75,40 +81,65 @@ func Worker(mapf func(string, string) []KeyValue,
 	//     - If a Reduce task, be careful with data read from map?
 
 	for {
-		if worker.state == Idle {
+		worker.WorkerLock.Lock()
+		state := worker.state
+		worker.WorkerLock.Unlock()
+		if state == Idle {
 			// Worker sends a request to get task. Waits for 3 seconds before retrying
 			quit := make(chan bool, 1)
-			func() {
-				RequestTask(&worker) // goroutine and wait
+			go func() {
+				reply = RequestTask(&worker) // goroutine and wait
 				quit <- true
+				defer close(quit)
 			}()
 			select {
 			case <-quit:
+				if reply.Id != worker.id {
+					log.Fatalln("Coordinator returned to worker ", worker.id, " but was for worker ", reply.Id)
+				}
+				worker.WorkerLock.Lock()
+				worker.state = reply.NewState
+				if worker.state == Kill {
+					continue
+				} else if worker.state == MapTask {
+					worker.mapFile = reply.Filename
+				} else if worker.state == ReduceTask {
+				} else if worker.state == Idle {
+					// Probably a phase is done. For now just kill
+					fmt.Println("Worker ", worker.id, " assigned to idle ", worker.state)
+					worker.state = Kill
+				}
+				worker.WorkerLock.Unlock()
+
 			case <-time.After(time.Second * 3):
-				fmt.Print("Could not get task. Retrying. State should be idle: ", worker.state)
+				fmt.Println("Could not get task for ", worker.id, " Retrying. State should be idle: ", worker.state)
+				if worker.state != Idle {
+					panic("Idle changed")
+				}
+				worker.WorkerLock.Lock()
+				worker.state = Kill
+				worker.WorkerLock.Unlock()
+				continue
 			}
 
-			fmt.Println("Worker ", worker.id, " received map file ", worker.mapFile)
-
-		}
-		if worker.state == MapTask {
+		} else if state == MapTask {
 			runMap(&worker, mapf)
 
-			quit := make(chan bool, 1)
-			func() {
-				MarkMapDone(&worker)
-				quit <- true
-			}()
-			select {
-			case <-quit:
-				fmt.Println("Informed coordinator successfully of completed map")
-			case <-time.After(time.Second * 10):
-				fmt.Print("Could not inform coordinator", worker.id)
-			}
+			// quit := make(chan bool, 1)
+			// go func() {
+			// 	MarkMapDone(&worker)
+			// 	quit <- true
+			// }()
+			// select {
+			// case <-quit:
+			// 	fmt.Println("Informed coordinator successfully of completed map")
+			// case <-time.After(time.Second * 10):
+			// 	fmt.Print("Could not inform coordinator", worker.id)
+			// }
 			worker.state = Kill
 
-		} else if worker.state == ReduceTask {
-		} else if worker.state == Kill {
+		} else if state == ReduceTask {
+		} else if state == Kill {
 			fmt.Println("Worker ", worker.id, " killed!")
 			break
 		}
@@ -169,33 +200,19 @@ func GetId(worker *WorkerStruct) WorkerReply {
 	args := WorkerArgs{}
 	reply := WorkerReply{}
 	ok := call("Coordinator.GetId", &args, &reply)
-	if ok {
-		worker.id = reply.Id
-	} else {
+	if !ok {
 		fmt.Println("Could not get receive ID")
 	}
 	return reply
 }
 
 func RequestTask(worker *WorkerStruct) WorkerReply {
+	worker.WorkerLock.Lock()
 	args := WorkerArgs{State: worker.state, Id: worker.id}
 	reply := WorkerReply{}
+	worker.WorkerLock.Unlock()
 	ok := call("Coordinator.GetTask", &args, &reply)
-	if ok {
-		if reply.Id != worker.id {
-			log.Fatalln("Coordinator returned to wrong worker")
-		}
-		worker.state = reply.NewState
-
-		if worker.state == Kill {
-			// Kill this worker
-		} else if worker.state == MapTask {
-			worker.mapFile = reply.Filename
-		} else if worker.state == ReduceTask {
-			worker.state = reply.NewState
-		}
-		worker.state = reply.NewState
-	} else {
+	if !ok {
 		fmt.Println("Assignment error")
 	}
 	return reply
