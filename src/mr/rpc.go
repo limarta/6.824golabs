@@ -22,30 +22,33 @@ type WorkerArgs struct {
 }
 
 type WorkerReply struct {
-	NewState   State
-	Filename   string
-	Id         int
-	Partitions int
+	NewState State
+	Filename string
+	Id       int
+	HashId   int
 }
 
-type DoneSignalArgs struct {
+type DoneMapArgs struct {
 	Id             int
 	Filename       string
 	Task           State
 	PartitionFiles []string
 }
 
-type DoneSignalReply struct {
+type DoneMapReply struct {
 	Id       int
 	Recorded bool
 }
 
-type ExampleArgs struct {
-	X int
+type DoneReduceArgs struct {
+	Id     int
+	Task   State
+	HashId int
 }
 
-type ExampleReply struct {
-	Y int
+type DoneReduceReply struct {
+	Id       int
+	Recorded bool
 }
 
 // Add your RPC definitions here.

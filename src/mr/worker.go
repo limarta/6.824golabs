@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"sync"
 	"time"
 )
@@ -27,6 +28,7 @@ type WorkerStruct struct {
 	id         int // Capitalize maybe
 	state      State
 	mapFile    string
+	reduceHash int
 	WorkerLock sync.Mutex
 }
 
@@ -37,6 +39,13 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -104,10 +113,12 @@ func Worker(mapf func(string, string) []KeyValue,
 				} else if worker.state == MapTask {
 					worker.mapFile = reply.Filename
 				} else if worker.state == ReduceTask {
+					worker.reduceHash = reply.HashId
 				} else if worker.state == Idle {
 					// Probably a phase is done. For now just kill
-					fmt.Println("Worker ", worker.id, " assigned to idle ", worker.state)
-					worker.state = Kill
+					fmt.Println("Worker ", worker.id, " assigned to idle for 3 seconds")
+					time.Sleep(2 * time.Second)
+					worker.state = Idle
 				}
 				worker.WorkerLock.Unlock()
 
@@ -126,7 +137,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			runMap(&worker, mapf)
 
 			quit := make(chan bool, 1)
-			reply := DoneSignalReply{}
+			reply := DoneMapReply{}
 			go func() {
 				reply = MarkMapDone(&worker)
 				quit <- true
@@ -135,12 +146,41 @@ func Worker(mapf func(string, string) []KeyValue,
 			select {
 			case <-quit:
 				fmt.Println("Informed coordinator successfully of completed map with reply ", reply)
+				worker.WorkerLock.Lock()
+				worker.state = Idle
+				worker.WorkerLock.Unlock()
 			case <-time.After(time.Second * 10):
-				fmt.Print("Could not inform coordinator", worker.id)
+				// fmt.Print("Could not inform coordinator", worker.id)
+				worker.WorkerLock.Lock()
+				worker.state = Kill // Coordinator is assumed to be dead
+				worker.WorkerLock.Unlock()
 			}
-			worker.state = Kill
 
 		} else if state == ReduceTask {
+			runReduce(&worker, reducef)
+			// quit := make(chan bool, 1)
+			// reply := DoneReduceReply{}
+			// go func() {
+			// 	reply = MarkReduceDone(&worker)
+			// 	quit <- true
+			// 	defer close(quit)
+			// }()
+			// select {
+			// case <-quit:
+			// 	fmt.Println("Informed coordinator successfully of completed reduce with reply ", reply)
+			// 	worker.WorkerLock.Lock()
+			// 	worker.state = Idle
+			// 	worker.WorkerLock.Unlock()
+			// case <-time.After(time.Second * 10):
+			// 	// fmt.Print("Could not inform coordinator", worker.id)
+			// 	worker.WorkerLock.Lock()
+			// 	worker.state = Kill // Coordinator is assumed to be dead
+			// 	worker.WorkerLock.Unlock()
+			// }
+			worker.WorkerLock.Lock()
+			worker.state = Kill
+			worker.WorkerLock.Unlock()
+
 		} else if state == Kill {
 			fmt.Println("Worker ", worker.id, " killed!")
 			break
@@ -198,6 +238,48 @@ func runMap(worker *WorkerStruct, mapf func(string, string) []KeyValue) {
 
 }
 
+func runReduce(worker *WorkerStruct, reducef func(string, []string) string) {
+	worker.WorkerLock.Lock()
+	key := worker.reduceHash
+	worker.WorkerLock.Unlock()
+	fmt.Println("Worker ", worker.id, " in reduce task with hash key ", key)
+	// Collect all files with fixed assigned hash.
+	// Read them in and sort them
+	// Output results to one file called mr-out-workerId
+	intermediate := []KeyValue{}
+	pair := KeyValue{"3", "2"}
+	intermediate = append(intermediate, pair)
+
+	sort.Sort(ByKey(intermediate))
+	pName := fmt.Sprintf("mr-out-%d", key)
+	tmpfile, err := ioutil.TempFile(".", pName)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		output := reducef(intermediate[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(tmpfile, "%v %v\n", intermediate[i].Key, output)
+
+		i = j
+	}
+	err = os.Rename(tmpfile.Name(), pName)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
 func GetId(worker *WorkerStruct) WorkerReply {
 	args := WorkerArgs{}
 	reply := WorkerReply{}
@@ -220,17 +302,38 @@ func RequestTask(worker *WorkerStruct) WorkerReply {
 	return reply
 }
 
-func MarkMapDone(worker *WorkerStruct) DoneSignalReply { // Informs coordinator of completed map task
+func MarkMapDone(worker *WorkerStruct) DoneMapReply { // Informs coordinator of completed map task
+	worker.WorkerLock.Lock()
+	workerId := worker.id
+	filename := worker.mapFile
+	worker.WorkerLock.Unlock()
 	partitionFiles := make([]string, NReduce)
 	for i := 0; i < NReduce; i++ {
 		partitionFiles[i] = fmt.Sprintf("mr-%d-%d", worker.id, i)
 	}
-	fmt.Println("Sending partitions ", partitionFiles)
-	args := DoneSignalArgs{Id: worker.id, Filename: worker.mapFile, PartitionFiles: partitionFiles}
-	reply := DoneSignalReply{}
+	fmt.Println("Worker ", workerId, " sending file ", filename, " with partitions ", partitionFiles)
+	args := DoneMapArgs{Id: workerId, Filename: filename, PartitionFiles: partitionFiles}
+	reply := DoneMapReply{}
 	ok := call("Coordinator.MarkMapDone", &args, &reply)
 	if !ok {
 		log.Fatalf("Could not inform coordinator of completion")
+	}
+	return reply
+}
+
+func MarkReduceDone(worker *WorkerStruct) DoneReduceReply {
+	worker.WorkerLock.Lock()
+	workerId := worker.id
+	filename := worker.mapFile
+	hashId := worker.reduceHash
+	worker.WorkerLock.Unlock()
+	fmt.Println("Worker ", workerId, " sending completed hash ", filename)
+	args := DoneReduceArgs{Id: workerId, HashId: hashId}
+	reply := DoneReduceReply{}
+
+	ok := call("Coordinator.MarkReduceDone", &args, &reply)
+	if !ok {
+		log.Fatalf("Could not inform coordinator of completed reduce")
 	}
 	return reply
 }
