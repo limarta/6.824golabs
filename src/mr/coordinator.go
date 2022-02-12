@@ -127,25 +127,25 @@ func (c *Coordinator) GetTask(args *WorkerArgs, reply *WorkerReply) error {
 					c.reducesRunning[hashId] = make(map[int]bool)
 				}
 
-				// for _, workerList := range c.reducesRunning { // Checks if worker already running task
-				// 	if _, ok := workerList[workerId]; ok {
-				// 		fmt.Println("Worker ", workerId, " already assigned to reduce task")
-				// 	}
-				// }
+				elapsed := time.Now().Sub(c.reducesTimeAssigned[hashId]).Seconds()
+				if elapsed > 10 {
+					c.reducesTimeAssigned[hashId] = time.Now()
+					c.reducesRunning[hashId][workerId] = true
 
-				if len(c.reducesRunning[hashId]) > 0 { // Currently policy is to assign one worker per task
-					// fmt.Println("Worker ", workerId, " encountered workers ", c.reducesRunning[file], " with same reduces task")
-					c.reducesRunningLock.Unlock() // UNLOCK RELEASE RUNNING
+					fmt.Printf("W[%d] assigned to REDUCE task hash %d\n", workerId, hashId)
+					fmt.Printf("W[%d] assigned to REDUCE task hash %d after elapsed time %f\n", workerId, hashId, elapsed)
+					fmt.Printf("W[%d] updated REDUCE timings %s\n", workerId, c.reducesTimeAssigned[hashId])
+					reply.NewState = ReduceTask
+					reply.HashId = hashId
+					c.reducesRunningLock.Unlock() // UNLOCK MAP RUNNING
+					c.reducesCompletedLock.Unlock()
+					return nil
+					// Time has elapsed too much
+				} else {
+					fmt.Printf("W[%d] REDUCE task hash %d NOT READY %f\n", workerId, hashId, elapsed)
+					c.reducesRunningLock.Unlock() // UNLOCK MAP RUNNING
 					continue
 				}
-				c.reducesRunning[hashId][workerId] = true
-
-				fmt.Printf("W[%d] assigned to REDUCE hash %d\n", workerId, hashId)
-				reply.NewState = ReduceTask
-				reply.HashId = hashId
-				c.reducesRunningLock.Unlock() // UNLOCK RELEASE RUNNING
-				c.reducesCompletedLock.Unlock()
-				return nil
 			} else {
 				// fmt.Println("Going to next file for worker ", workerId)
 			}
@@ -181,7 +181,7 @@ func (c *Coordinator) MarkMapDone(args *DoneMapArgs, reply *DoneMapReply) error 
 	// TODO: assert that this work was actually worker
 	c.mapsCompletedLock.Lock()
 	if c.mapsCompleted[filename] != 0 { // Was previously completed. Ignore this worker
-		fmt.Println("Repeated map work: ", filename, " by worker ", workerId)
+		fmt.Printf("W[%d] repeated MAP %s\n", workerId, filename)
 		reply.Id = workerId
 		reply.Recorded = true
 		c.mapsCompletedLock.Unlock()
