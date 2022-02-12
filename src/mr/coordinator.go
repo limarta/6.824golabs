@@ -298,7 +298,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.mapsRunning = make(map[string](map[int]bool))
 	c.reducesRunning = make(map[int]map[int]bool)
 	c.nextWorkerId = 1
-	c.nreduce = 10
+	c.nreduce = 11
 
 	for _, file := range files {
 		c.mapsCompleted[file] = 0

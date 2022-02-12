@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -22,7 +23,7 @@ const (
 	Kill
 )
 
-const NReduce int = 10
+const NReduce int = 11
 
 type WorkerStruct struct {
 	id         int // Capitalize maybe
@@ -240,16 +241,39 @@ func runMap(worker *WorkerStruct, mapf func(string, string) []KeyValue) {
 
 func runReduce(worker *WorkerStruct, reducef func(string, []string) string) {
 	worker.WorkerLock.Lock()
+	workerId := worker.id
 	key := worker.reduceHash
 	worker.WorkerLock.Unlock()
 	fmt.Println("Worker ", worker.id, " in reduce task with hash key ", key)
 	// Collect all files with fixed assigned hash.
 	// Read them in and sort them
 	// Output results to one file called mr-out-workerId
-	intermediate := []KeyValue{}
-	pair := KeyValue{"3", "2"}
-	intermediate = append(intermediate, pair)
+	intermediate := []KeyValue{}                             // Array of KeyValue type
+	files, err := filepath.Glob(fmt.Sprintf("mr-*-%d", key)) // Does not handle >1 digit workers
+	if err != nil {
+		// handle errors
+	}
+	fmt.Println(files)
+	for _, filename := range files {
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatal("Worker ", workerId, " could not open the partitions!")
+		}
 
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			intermediate = append(intermediate, kv)
+		}
+		file.Close()
+	}
+
+	// pair := KeyValue{"3", "2"}
+	// intermediate = append(intermediate, pair)
+	// fmt.Println("Worker ", workerId, " with intermediates ", intermediate)
 	sort.Sort(ByKey(intermediate))
 	pName := fmt.Sprintf("mr-out-%d", key)
 	tmpfile, err := ioutil.TempFile(".", pName)
@@ -275,6 +299,7 @@ func runReduce(worker *WorkerStruct, reducef func(string, []string) string) {
 		i = j
 	}
 	err = os.Rename(tmpfile.Name(), pName)
+	fmt.Println("Worker ", workerId, " final output ", pName)
 	if err != nil {
 		log.Fatal(err)
 	}
