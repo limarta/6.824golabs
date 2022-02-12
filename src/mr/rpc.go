@@ -22,15 +22,17 @@ type WorkerArgs struct {
 }
 
 type WorkerReply struct {
-	NewState State
-	Filename string
-	Id       int
-	HashId   int
+	NewState      State
+	Filename      string
+	FilenameIndex int
+	Id            int
+	HashId        int
 }
 
 type DoneMapArgs struct {
 	Id             int
 	Filename       string
+	FilenameIndex  int
 	Task           State
 	PartitionFiles []string
 }
