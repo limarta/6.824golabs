@@ -1,10 +1,32 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
+import (
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"net/rpc"
+	"os"
+	"time"
+)
 
+type State int
+
+const (
+	Idle State = iota
+	MapTask
+	ReduceTask
+	Kill
+)
+
+const NReduce int = 10
+
+type WorkerStruct struct {
+	id      int // Capitalize maybe
+	state   State
+	mapFile string
+}
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,46 +46,174 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
 //
 // main/mrworker.go calls this function.
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
+	worker := WorkerStruct{id: -1, state: Idle}
 
-	// Your worker implementation here.
+	// Get ID for worker
+	ch := make(chan bool, 1)
+	defer close(ch)
+	go func() {
+		GetId(&worker)
+		ch <- true
+	}()
+	select {
+	case <-ch:
+		fmt.Println("Earned id ", worker.id)
+	case <-time.After(time.Second * 3):
+		fmt.Println("Could not reach master")
+	}
 
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
+	// Worker tasks:
+	// Thread 1: Process map/reduce task
+	// Thread 2: Call master or master calls worker to know status.
+	//     - Request master for task
+	//     - Master may not respond with any info. If so, exit after a period.
+	//     - If a Reduce task, be careful with data read from map?
+
+	for {
+		if worker.state == Idle {
+			// Worker sends a request to get task. Waits for 3 seconds before retrying
+			quit := make(chan bool, 1)
+			func() {
+				RequestTask(&worker) // goroutine and wait
+				quit <- true
+			}()
+			select {
+			case <-quit:
+			case <-time.After(time.Second * 3):
+				fmt.Print("Could not get task. Retrying. State should be idle: ", worker.state)
+			}
+
+			fmt.Println("Worker ", worker.id, " received map file ", worker.mapFile)
+
+		}
+		if worker.state == MapTask {
+			runMap(&worker, mapf)
+
+			quit := make(chan bool, 1)
+			func() {
+				MarkMapDone(&worker)
+				quit <- true
+			}()
+			select {
+			case <-quit:
+				fmt.Println("Informed coordinator successfully of completed map")
+			case <-time.After(time.Second * 10):
+				fmt.Print("Could not inform coordinator", worker.id)
+			}
+			worker.state = Kill
+
+		} else if worker.state == ReduceTask {
+		} else if worker.state == Kill {
+			fmt.Println("Worker ", worker.id, " killed!")
+			break
+		}
+	}
 
 }
 
-//
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
+func runMap(worker *WorkerStruct, mapf func(string, string) []KeyValue) {
+	fmt.Println("Running map for ", worker.id)
 
-	// declare an argument structure.
-	args := ExampleArgs{}
+	filename := worker.mapFile
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
+	kva := mapf(filename, string(content)) // Array of KeyValue type
+	buckets := make(map[int]([]KeyValue))
 
-	// fill in the argument(s).
-	args.X = 99
+	for _, pair := range kva {
+		partition := ihash(pair.Key) % NReduce
+		if buckets[partition] == nil {
+			buckets[partition] = []KeyValue{}
+		}
 
-	// declare a reply structure.
-	reply := ExampleReply{}
+		buckets[partition] = append(buckets[partition], pair)
+	}
+	fmt.Println("Built buckets for worker ", worker.id)
 
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
+	for i := 0; i < NReduce; i++ {
+		pName := fmt.Sprintf("mr-%d-%d", worker.id, i)
+		tmpfile, err := ioutil.TempFile(".", pName)
+		if err != nil {
+			log.Fatal(err)
+		}
+		enc := json.NewEncoder(tmpfile)
+		for _, kv := range buckets[i] {
+			err := enc.Encode(&kv)
+
+			if err != nil {
+				log.Fatalf("Could not save partition")
+			}
+
+		}
+		err = os.Rename(tmpfile.Name(), pName)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+}
+
+func GetId(worker *WorkerStruct) WorkerReply {
+	args := WorkerArgs{}
+	reply := WorkerReply{}
+	ok := call("Coordinator.GetId", &args, &reply)
 	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
+		worker.id = reply.Id
 	} else {
-		fmt.Printf("call failed!\n")
+		fmt.Println("Could not get receive ID")
+	}
+	return reply
+}
+
+func RequestTask(worker *WorkerStruct) WorkerReply {
+	args := WorkerArgs{State: worker.state, Id: worker.id}
+	reply := WorkerReply{}
+	ok := call("Coordinator.GetTask", &args, &reply)
+	if ok {
+		if reply.Id != worker.id {
+			log.Fatalln("Coordinator returned to wrong worker")
+		}
+		worker.state = reply.NewState
+
+		if worker.state == Kill {
+			// Kill this worker
+		} else if worker.state == MapTask {
+			worker.mapFile = reply.Filename
+		} else if worker.state == ReduceTask {
+			worker.state = reply.NewState
+		}
+		worker.state = reply.NewState
+	} else {
+		fmt.Println("Assignment error")
+	}
+	return reply
+}
+
+func MarkMapDone(worker *WorkerStruct) { // Informs coordinator of completed map task
+	partitionFiles := make([]string, NReduce)
+	for i := 0; i < NReduce; i++ {
+		partitionFiles[i] = fmt.Sprintf("mr-%d-%d", worker.id, i)
+	}
+	fmt.Println("Sending partitions ", partitionFiles)
+	args := DoneSignalArgs{Id: worker.id, Filename: worker.mapFile, PartitionFiles: partitionFiles}
+	reply := DoneSignalReply{}
+	ok := call("Coordinator.MarkMapDone", &args, &reply)
+	if ok {
+
+	} else {
+		log.Fatalf("Could not inform coordinator of completion")
 	}
 }
 
