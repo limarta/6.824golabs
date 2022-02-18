@@ -47,7 +47,7 @@ func (c *Coordinator) GetId(args *WorkerArgs, reply *WorkerReply) error {
 	c.workerCountLock.Lock()
 	reply.Id = c.nextWorkerId
 	c.nextWorkerId += 1
-	fmt.Printf("W[%d] given ID\n", reply.Id)
+	// fmt.Printf("W[%d] given ID\n", reply.Id)
 	c.workerCountLock.Unlock()
 	return nil
 }
@@ -77,9 +77,9 @@ func (c *Coordinator) GetTask(args *WorkerArgs, reply *WorkerReply) error {
 					c.mapsTimeAssigned[file] = time.Now()
 					c.mapsRunning[file][workerId] = true
 
-					fmt.Printf("W[%d] assigned to MAP task %s\n", workerId, file)
-					fmt.Printf("W[%d] assigned to MAP task %s after elapsed time %f\n", workerId, file, elapsed)
-					fmt.Printf("W[%d] updated MAP timings %s\n", workerId, c.mapsTimeAssigned[file])
+					// fmt.Printf("W[%d] assigned to MAP task %s\n", workerId, file)
+					// fmt.Printf("W[%d] assigned to MAP task %s after elapsed time %f\n", workerId, file, elapsed)
+					// fmt.Printf("W[%d] updated MAP timings %s\n", workerId, c.mapsTimeAssigned[file])
 					reply.NewState = MapTask
 					reply.Filename = file
 					reply.FilenameIndex = c.filesToIndices[file]
@@ -88,7 +88,7 @@ func (c *Coordinator) GetTask(args *WorkerArgs, reply *WorkerReply) error {
 					return nil
 					// Time has elapsed too much
 				} else {
-					fmt.Printf("W[%d] MAP task %s NOT READY %f\n", workerId, file, elapsed)
+					// fmt.Printf("W[%d] MAP task %s NOT READY %f\n", workerId, file, elapsed)
 					c.mapsRunningLock.Unlock() // UNLOCK MAP RUNNING
 					continue
 				}
@@ -97,11 +97,11 @@ func (c *Coordinator) GetTask(args *WorkerArgs, reply *WorkerReply) error {
 			}
 		}
 		c.mapsCompletedLock.Unlock() // UNLOCK MAP COMPLETE
-		fmt.Printf("W[%d] no available MAP tasks to try\n", workerId)
+		// fmt.Printf("W[%d] no available MAP tasks to try\n", workerId)
 		reply.NewState = Idle
 
 		if completedMapPhase { // Benign race? Multiple workers may be here when map phase completes
-			fmt.Printf("W[%d] attempting to transition to REDUCE PHASE\n", workerId)
+			// fmt.Printf("W[%d] attempting to transition to REDUCE PHASE\n", workerId)
 			c.phaseLock.Lock()
 			if c.phase == MapPhase {
 				c.phase = ReducePhase // If c.phase == Finished, then this will revert it back to reduce without locking
@@ -109,7 +109,7 @@ func (c *Coordinator) GetTask(args *WorkerArgs, reply *WorkerReply) error {
 			}
 			c.phaseLock.Unlock()
 		} else {
-			fmt.Printf("W[%d] MAP tasks remaining but nothing to assign\n", workerId)
+			// fmt.Printf("W[%d] MAP tasks remaining but nothing to assign\n", workerId)
 		}
 	} else if phase == ReducePhase {
 		completedReducePhase := true
@@ -132,9 +132,9 @@ func (c *Coordinator) GetTask(args *WorkerArgs, reply *WorkerReply) error {
 					c.reducesTimeAssigned[hashId] = time.Now()
 					c.reducesRunning[hashId][workerId] = true
 
-					fmt.Printf("W[%d] assigned to REDUCE task hash %d\n", workerId, hashId)
-					fmt.Printf("W[%d] assigned to REDUCE task hash %d after elapsed time %f\n", workerId, hashId, elapsed)
-					fmt.Printf("W[%d] updated REDUCE timings %s\n", workerId, c.reducesTimeAssigned[hashId])
+					// fmt.Printf("W[%d] assigned to REDUCE task hash %d\n", workerId, hashId)
+					// fmt.Printf("W[%d] assigned to REDUCE task hash %d after elapsed time %f\n", workerId, hashId, elapsed)
+					// fmt.Printf("W[%d] updated REDUCE timings %s\n", workerId, c.reducesTimeAssigned[hashId])
 					reply.NewState = ReduceTask
 					reply.HashId = hashId
 					c.reducesRunningLock.Unlock() // UNLOCK MAP RUNNING
@@ -142,7 +142,7 @@ func (c *Coordinator) GetTask(args *WorkerArgs, reply *WorkerReply) error {
 					return nil
 					// Time has elapsed too much
 				} else {
-					fmt.Printf("W[%d] REDUCE task hash %d NOT READY %f\n", workerId, hashId, elapsed)
+					// fmt.Printf("W[%d] REDUCE task hash %d NOT READY %f\n", workerId, hashId, elapsed)
 					c.reducesRunningLock.Unlock() // UNLOCK MAP RUNNING
 					continue
 				}
@@ -151,11 +151,11 @@ func (c *Coordinator) GetTask(args *WorkerArgs, reply *WorkerReply) error {
 			}
 		}
 		c.reducesCompletedLock.Unlock()
-		fmt.Printf("W[%d] no available REDUCE task to try\n", workerId)
+		// fmt.Printf("W[%d] no available REDUCE task to try\n", workerId)
 		reply.NewState = Idle
 
 		if completedReducePhase { // Benign race? Multiple workers may be here when map phase completes
-			fmt.Printf("W[%d] attempting to transition to FINISHED PHASE\n", workerId)
+			// fmt.Printf("W[%d] attempting to transition to FINISHED PHASE\n", workerId)
 			c.phaseLock.Lock()
 			if c.phase == ReducePhase {
 				c.phase = Finished // If c.phase == Finished, then this will revert it back to reduce without locking
@@ -165,7 +165,7 @@ func (c *Coordinator) GetTask(args *WorkerArgs, reply *WorkerReply) error {
 			}
 			c.phaseLock.Unlock()
 		} else {
-			fmt.Println("More reduce tasks remaining but nothing to assign yet")
+			// fmt.Println("More reduce tasks remaining but nothing to assign yet")
 		}
 	} else if phase == Finished {
 		fmt.Printf("W[%d] entered Finished phase\n", workerId)
@@ -181,7 +181,7 @@ func (c *Coordinator) MarkMapDone(args *DoneMapArgs, reply *DoneMapReply) error 
 	// TODO: assert that this work was actually worker
 	c.mapsCompletedLock.Lock()
 	if c.mapsCompleted[filename] != 0 { // Was previously completed. Ignore this worker
-		fmt.Printf("W[%d] repeated MAP %s\n", workerId, filename)
+		// fmt.Printf("W[%d] repeated MAP %s\n", workerId, filename)
 		reply.Id = workerId
 		reply.Recorded = true
 		c.mapsCompletedLock.Unlock()
@@ -199,7 +199,7 @@ func (c *Coordinator) MarkMapDone(args *DoneMapArgs, reply *DoneMapReply) error 
 		// First time completed
 		c.mapsCompleted[filename] = workerId
 		// partitionFiles := args.PartitionFiles
-		fmt.Printf("W[%d] confirmation of done MAP task %s\n", workerId, filename)
+		// fmt.Printf("W[%d] confirmation of done MAP task %s\n", workerId, filename)
 
 		// fmt.Println("Before running for marked worker ", workerId, " ", c.mapsRunning)
 		delete(c.mapsRunning, filename) // WARNING: NOP
@@ -225,7 +225,7 @@ func (c *Coordinator) MarkReduceDone(args *DoneReduceArgs, reply *DoneReduceRepl
 
 	c.reducesCompletedLock.Lock()
 	if c.reducesCompleted[hashId] != 0 { // Was previously completed. Ignore this worker
-		fmt.Printf("W[%d] repeated REDUCE hash %d\n", hashId, workerId)
+		// fmt.Printf("W[%d] repeated REDUCE hash %d\n", hashId, workerId)
 		reply.Id = workerId
 		reply.Recorded = true
 		c.reducesCompletedLock.Unlock()
@@ -241,7 +241,7 @@ func (c *Coordinator) MarkReduceDone(args *DoneReduceArgs, reply *DoneReduceRepl
 
 		// First time completed
 		c.reducesCompleted[hashId] = workerId
-		fmt.Printf("W[%d] confirmation of REDUCED hash %d\n", workerId, hashId)
+		// fmt.Printf("W[%d] confirmation of REDUCED hash %d\n", workerId, hashId)
 
 		// fmt.Println("Before running for marked reduces worker ", workerId, " ", c.reducesRunning)
 		delete(c.reducesRunning, hashId) // WARNING: NOP
@@ -281,11 +281,13 @@ func (c *Coordinator) server() {
 //
 func (c *Coordinator) Done() bool {
 	ret := false
-	// c.phaseLock.Lock()
-	// ret = c.phase == Finished
-	// c.phaseLock.Unlock()
+	c.phaseLock.Lock()
+	ret = c.phase == Finished
+	c.phaseLock.Unlock()
 
+	// return (c.phase == Finished)
 	return ret
+	// return ret
 }
 
 //

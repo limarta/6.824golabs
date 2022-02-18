@@ -105,9 +105,9 @@ func Worker(mapf func(string, string) []KeyValue,
 			}()
 			select {
 			case <-quit:
-				if reply.Id != worker.id {
-					log.Fatalln("Coordinator returned to worker ", worker.id, " but was for worker ", reply.Id)
-				}
+				// if reply.Id != worker.id {
+				// 	log.Fatalln("Coordinator returned to worker ", worker.id, " but was for worker ", reply.Id)
+				// }
 				worker.WorkerLock.Lock()
 				worker.state = reply.NewState
 				if worker.state == Kill {
@@ -127,8 +127,8 @@ func Worker(mapf func(string, string) []KeyValue,
 				}
 				worker.WorkerLock.Unlock()
 
-			case <-time.After(time.Second * 3):
-				fmt.Println("Could not get task for ", worker.id, " Retrying. State should be idle: ", worker.state)
+			case <-time.After(10 * time.Second):
+				fmt.Printf("W[%d] could NOT get TASK. Master is assumed dead.\n", worker.id)
 				if worker.state != Idle {
 					panic("Idle changed")
 				}
@@ -143,6 +143,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 			quit := make(chan bool, 1)
 			reply := DoneMapReply{}
+			_ = reply
 			go func() {
 				reply = MarkMapDone(&worker)
 				quit <- true
@@ -150,12 +151,12 @@ func Worker(mapf func(string, string) []KeyValue,
 			}()
 			select {
 			case <-quit:
-				fmt.Printf("W[%d] informed coordinator successfully of completed map with reply %t\n", reply.Id, reply.Recorded)
+				// fmt.Printf("W[%d] informed coordinator successfully of completed map with reply %t\n", reply.Id, reply.Recorded)
 				worker.WorkerLock.Lock()
 				worker.state = Idle
 				worker.WorkerLock.Unlock()
 			case <-time.After(time.Second * 10):
-				// fmt.Print("Could not inform coordinator", worker.id)
+				fmt.Printf("W[%d] could NOT get TASK. Master is assumed dead.\n", worker.id)
 				worker.WorkerLock.Lock()
 				worker.state = Kill // Coordinator is assumed to be dead
 				worker.WorkerLock.Unlock()
@@ -165,6 +166,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			runReduce(&worker, reducef)
 			quit := make(chan bool, 1)
 			reply := DoneReduceReply{}
+			_ = reply
 			go func() {
 				reply = MarkReduceDone(&worker)
 				quit <- true
@@ -172,12 +174,12 @@ func Worker(mapf func(string, string) []KeyValue,
 			}()
 			select {
 			case <-quit:
-				fmt.Printf("W[%d] informed coordinator successfully of completed REDUCED with reply %t\n", reply.Id, reply.Recorded)
+				// fmt.Printf("W[%d] informed coordinator successfully of completed REDUCED with reply %t\n", reply.Id, reply.Recorded)
 				worker.WorkerLock.Lock()
 				worker.state = Idle
 				worker.WorkerLock.Unlock()
 			case <-time.After(time.Second * 10):
-				// fmt.Print("Could not inform coordinator", worker.id)
+				fmt.Printf("W[%d] could NOT get TASK. Master is assumed dead.\n", worker.id)
 				worker.WorkerLock.Lock()
 				worker.state = Kill // Coordinator is assumed to be dead
 				worker.WorkerLock.Unlock()
@@ -191,7 +193,7 @@ func Worker(mapf func(string, string) []KeyValue,
 }
 
 func runMap(worker *WorkerStruct, mapf func(string, string) []KeyValue) {
-	fmt.Printf("W[%d] running MAP on %s\n", worker.id, worker.mapFile)
+	// fmt.Printf("W[%d] running MAP on %s\n", worker.id, worker.mapFile)
 
 	filename := worker.mapFile
 	file, err := os.Open(filename)
@@ -213,10 +215,13 @@ func runMap(worker *WorkerStruct, mapf func(string, string) []KeyValue) {
 
 		buckets[partition] = append(buckets[partition], pair)
 	}
-	fmt.Printf("W[%d] built MAP buckets for %s\n", worker.id, worker.mapFile)
+	// fmt.Printf("W[%d] built MAP buckets for %s\n", worker.id, worker.mapFile)
 
 	// Parallelize this for multiple writes
 	for i := 0; i < NReduce; i++ {
+		if len(buckets[i]) == 0 {
+			continue
+		}
 		pName := fmt.Sprintf("mr-%d-%d", worker.mapFileIndex, i)
 		tmpfile, err := ioutil.TempFile(".", pName)
 		if err != nil {
@@ -243,8 +248,11 @@ func runReduce(worker *WorkerStruct, reducef func(string, []string) string) {
 	worker.WorkerLock.Lock()
 	workerId := worker.id
 	key := worker.reduceHash
+	if key > 11 {
+		fmt.Printf("W[%d] has large key %d\n", workerId, key)
+	}
 	worker.WorkerLock.Unlock()
-	fmt.Printf("W[%d] running REDUCE on hash %d\n", worker.id, key)
+	// fmt.Printf("W[%d] running REDUCE on hash %d\n", worker.id, key)
 	// Collect all files with fixed assigned hash.
 	// Read them in and sort them
 	// Output results to one file called mr-out-workerId
@@ -253,7 +261,10 @@ func runReduce(worker *WorkerStruct, reducef func(string, []string) string) {
 	if err != nil {
 		// handle errors
 	}
-	fmt.Printf("W[%d] using partitions %s\n", workerId, files)
+	if len(files) == 0 {
+		return
+	}
+	// fmt.Printf("W[%d] using partitions %s\n", workerId, files)
 	for _, filename := range files {
 		file, err := os.Open(filename)
 		if err != nil {
@@ -339,7 +350,7 @@ func MarkMapDone(worker *WorkerStruct) DoneMapReply { // Informs coordinator of 
 	reply := DoneMapReply{}
 	ok := call("Coordinator.MarkMapDone", &args, &reply)
 	if !ok {
-		log.Fatalf("W[%d] could not inform coordinator of completion", workerId)
+		log.Printf("W[%d] could not inform coordinator of completion", workerId)
 	}
 	return reply
 }
@@ -349,13 +360,13 @@ func MarkReduceDone(worker *WorkerStruct) DoneReduceReply {
 	workerId := worker.id
 	hashId := worker.reduceHash
 	worker.WorkerLock.Unlock()
-	fmt.Printf("W[%d] sending completed hash %d\n", workerId, hashId)
+	// fmt.Printf("W[%d] sending completed hash %d\n", workerId, hashId)
 	args := DoneReduceArgs{Id: workerId, HashId: hashId}
 	reply := DoneReduceReply{}
 
 	ok := call("Coordinator.MarkReduceDone", &args, &reply)
 	if !ok {
-		log.Fatalf("Could not inform coordinator of completed reduce")
+		// log.Printf("Could not inform coordinator of completed reduce")
 	}
 	return reply
 }
@@ -370,7 +381,8 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
-		log.Fatal("dialing:", err)
+		log.Fatalln("dialing:", err)
+		return false
 	}
 	defer c.Close()
 
@@ -379,6 +391,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	fmt.Println(err)
+	log.Fatalln("Error in call")
 	return false
 }
