@@ -428,24 +428,31 @@ func (rf *Raft) startElection() {
 			rf.mu.Lock()
 			if rf.term > electionTerm {
 				// No longer leader
+				break
 			}
 			if rf.job == Follower {
 				// No longer leader
+				break
 			}
-			// for id := 0; id < len(rf.peers); id++ {
-			// 	if id != candidateId {
-			// 		// args := AppendEntriesArgs{Term: , CandidateId: candidateId, LastLogIndex: -1, LastLogTerm: -1}
-			// 		reply := AppendEntriesReply{}
-			// 		go func(peer_id int) {
-			// 			rf.sendAppendEntries(peer_id, &args, &reply)
-			// 			rf.mu.Lock()
-			// 			// Check for success
-			// 			// If fail, check to see if it is still leader
-			// 			rf.mu.Unlock()
-			// 		}(id)
-			// 	}
-			// }
 			rf.mu.Unlock()
+			for id := 0; id < len(rf.peers); id++ {
+				if id != candidateId {
+					args := AppendEntriesArgs{Term: electionTerm, LeaderId: candidateId, PrevLogIndex: 0, PrevLogTerm: 0, Entries: make([]Log, 0), LeaderCommit: -1}
+					reply := AppendEntriesReply{}
+					go func(peer_id int) {
+						rf.sendAppendEntries(peer_id, &args, &reply)
+						rf.mu.Lock()
+
+						if reply.Term > electionTerm {
+							rf.term = reply.Term
+							rf.job = Follower
+							rf.isLeader = false
+						}
+						rf.mu.Unlock()
+					}(id)
+				}
+			}
+			// Do I need to wait for all responses back?
 			time.Sleep(200) // Sleep for 200 ms
 
 		}
