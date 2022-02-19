@@ -207,17 +207,20 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//Check if leader, follower, candidate?
 	rf.mu.Lock()
+	DPrintf("[S%d] received VoteRequest from [S%d] for term %d\n", rf.me, args.CandidateId, args.Term)
 	// TODO: Must check Complete Leader condition. Incomplete right now.
 	if rf.term > args.Term { // Candidate is old. Reject.
+		DPrintf("[S%d] (term = %d) old RequestVote from [S%d] (term = %d)\n", rf.me, rf.term, args.CandidateId, args.Term)
 		reply.Term = rf.term
 		reply.VoteGranted = false
 	} else if rf.term < args.Term {
+		DPrintf("[S%d] (term = %d) valid RequestVote from [S%d] (term = %d)\n", rf.me, rf.term, args.CandidateId, args.Term)
 		rf.term = args.Term
 		rf.job = Follower
 		rf.isLeader = false
 		rf.votedFor = args.CandidateId
 		rf.shouldReset = true
-		// Convert to follower and reset election timer
+		DPrintf("[S%d] accepted requestVote from [S%d], new term %d job %d isLeader %t votedFor %d shouldReset %t\n", rf.me, args.Term, rf.term, rf.job, rf.isLeader, rf.votedFor, rf.shouldReset)
 		reply.Term = rf.term
 		reply.VoteGranted = true
 	} else {
@@ -367,6 +370,7 @@ func (rf *Raft) startElection() {
 	electionTerm := rf.term
 	candidateId := rf.me
 	cluster_size := len(rf.peers)
+	DPrintf("[S%d] started election term %d\n", candidateId, electionTerm)
 	rf.mu.Unlock()
 
 	voteCount := 1
@@ -377,14 +381,17 @@ func (rf *Raft) startElection() {
 			args := RequestVoteArgs{Term: electionTerm, CandidateId: candidateId, LastLogIndex: -1, LastLogTerm: -1}
 			reply := RequestVoteReply{}
 			go func(peer_id int) {
+				DPrintf("[S%d] requestVote [S%d]", candidateId, peer_id)
 				rf.sendRequestVote(peer_id, &args, &reply)
 				rf.mu.Lock()
+				DPrintf("[S%d] requestVote response from [S%d]\n", candidateId, peer_id)
 				if reply.Term > electionTerm {
 					rf.term = reply.Term
 					rf.job = Follower
 				}
 				if reply.VoteGranted {
 					voteCount += 1
+					DPrintf("[S%d] voted updated: %d\n", candidateId, voteCount)
 				}
 				responses += 1
 				rf.mu.Unlock()
@@ -408,6 +415,7 @@ func (rf *Raft) startElection() {
 		}
 		curVoteCount := voteCount
 		if curVoteCount > cluster_size/2 { // Won election
+			DPrintf("[S%d] won election for term %d with %d/%d votes \n", candidateId, electionTerm, curVoteCount, cluster_size)
 			wonElection = true
 			rf.isLeader = true
 			rf.job = Leader
@@ -420,8 +428,10 @@ func (rf *Raft) startElection() {
 		}
 		rf.mu.Unlock()
 	}
+	rf.mu.Unlock()
 
 	if wonElection { // Start heartbeating
+		DPrintf("[S%d] now heartbeating term %d\n", candidateId, electionTerm)
 
 		// What happens if server gets demoted, timer expires, turns into Candidate?
 		for {
@@ -441,8 +451,8 @@ func (rf *Raft) startElection() {
 					reply := AppendEntriesReply{}
 					go func(peer_id int) {
 						rf.sendAppendEntries(peer_id, &args, &reply)
+						DPrintf("[S%d] hearbeat response from [S%d] with success=%t\n", candidateId, peer_id, reply.Success)
 						rf.mu.Lock()
-
 						if reply.Term > electionTerm {
 							rf.term = reply.Term
 							rf.job = Follower
@@ -453,38 +463,43 @@ func (rf *Raft) startElection() {
 				}
 			}
 			// Do I need to wait for all responses back?
-			time.Sleep(200) // Sleep for 200 ms
+			time.Sleep(200 * time.Millisecond) // Sleep for 200 ms
 
 		}
+		rf.mu.Unlock()
 	}
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
-	timeout := rand.Intn(200) + 250
+	timeout := rand.Intn(400) + 1000
 	for rf.killed() == false {
 
 		time.Sleep(time.Duration(timeout) * time.Millisecond)
 
 		rf.mu.Lock()
+		DPrintf("[S%d] woke up. shouldReset=%t \n", rf.me, rf.shouldReset)
 		if rf.shouldReset {
-			// Add kill check here
-			timeout = rand.Intn(200) + 250
+			DPrintf("[S%d] timer reset\n", rf.me)
+			timeout = rand.Intn(400) + 1000
+			rf.shouldReset = false
 		} else { // Timer has expired. Turn into candidate
 			if rf.job == Leader {
+				DPrintf("[S%d] is leader\n", rf.me)
+				rf.mu.Unlock()
 				continue
 			}
 			if rf.job == Follower { // You become a candidate, but someone else requests your vote. Must reject atht one
+				DPrintf("[S%d] promoted to CANDIDATE\n", rf.me)
 				rf.job = Candidate
 				rf.isLeader = false
 			}
 			rf.term += 1
-			timeout = rand.Intn(200) + 250
+			timeout = rand.Intn(400) + 1000
 
 			// Vote for yourself
 			rf.votedFor = rf.me
-			// TODO: Kill previous election
 			go rf.startElection()
 		}
 		rf.mu.Unlock()
@@ -508,7 +523,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-
+	rf.job = Follower
 	rf.isLeader = false
 	rf.term = 0
 	// nextIndex = ?
@@ -525,6 +540,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	getVerbosity()
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
