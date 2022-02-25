@@ -207,7 +207,7 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//Check if leader, follower, candidate?
 	rf.mu.Lock()
-	DPrintf(dReqVote, "[S%d] received VoteRequest from [S%d] for term %d\n", rf.me, args.CandidateId, args.Term)
+	DPrintf(dReqVote, "[S%d] -> [S%d] for term %d\n", rf.me, args.CandidateId, args.Term)
 	// TODO: Must check Complete Leader condition. Incomplete right now.
 	if rf.term > args.Term { // Candidate is old. Reject.
 		DPrintf(dReqVote, "[S%d] (term = %d) old RequestVote from [S%d] (term = %d)\n", rf.me, rf.term, args.CandidateId, args.Term)
@@ -327,8 +327,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader = rf.job == Leader
 	term = rf.term
 	index = len(rf.logs)
-	DPrintf(dStart, "[S%d]", rf.me)
-	// Add to log?
+	if isLeader {
+		newLog := Log{Term: term, Command: command}
+		rf.logs = append(rf.logs, newLog)
+	}
+	DPrintf(dStart, "[S%d] [cmd %v] [isLeader=%t] [index %d]", rf.me, command, isLeader, index)
+	// Go routine here to send stuff out?
 	rf.mu.Unlock()
 
 	return index, term, isLeader
@@ -355,6 +359,51 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) heartBeat(candidateId int, electionTerm int) {
+	DPrintf(dBeat, "[S%d] now heartbeating term %d\n", candidateId, electionTerm)
+
+	// What happens if server gets demoted, timer expires, turns into Candidate?
+	lastBeatTime := time.Time{}
+	for {
+		rf.mu.Lock()
+		if rf.term > electionTerm || rf.job == Follower {
+			rf.mu.Unlock()
+			break
+		}
+		rf.mu.Unlock()
+		if time.Since(lastBeatTime).Milliseconds() > 200 {
+			for id := 0; id < len(rf.peers); id++ {
+				if id != candidateId {
+					args := AppendEntriesArgs{Term: electionTerm, LeaderId: candidateId, PrevLogIndex: 0, PrevLogTerm: 0, Entries: make([]Log, 0), LeaderCommit: -1}
+					reply := AppendEntriesReply{}
+					go func(peer_id int) {
+						rf.sendAppendEntries(peer_id, &args, &reply)
+						DPrintf(dBeat, "[S%d] response from S%d] with reply=%t\n", candidateId, peer_id, reply.Success)
+						rf.mu.Lock()
+						if reply.Term > electionTerm {
+							rf.term = reply.Term
+							rf.job = Follower
+							rf.isLeader = false
+						}
+						rf.mu.Unlock()
+					}(id)
+				}
+			}
+			lastBeatTime = time.Now()
+		}
+	}
+}
+
+func (rf *Raft) listenAppendEntries(candidateId int, electionTerm int) {
+	// TODO: Parallelize over servers. Repeatedly append to each one.
+	// TODO: Check constantly when a log has been commited.
+	// TODO: If new leader discovered, handle logic (similar to HeartBeat logic)
+	// TODO: Execute log. Contact how with ApplyMsg?
+	for id := 1; id < len(rf.peers); id++ {
+
+	}
+}
+
 // Creates an election. Some how kill previous election?
 func (rf *Raft) startElection() {
 	rf.mu.Lock()
@@ -372,7 +421,7 @@ func (rf *Raft) startElection() {
 			args := RequestVoteArgs{Term: electionTerm, CandidateId: candidateId, LastLogIndex: -1, LastLogTerm: -1}
 			reply := RequestVoteReply{}
 			go func(peer_id int) {
-				DPrintf(dElect, "[S%d] requestVote [S%d]", candidateId, peer_id)
+				DPrintf(dElect, "[S%d] -> [S%d]", candidateId, peer_id)
 				rf.sendRequestVote(peer_id, &args, &reply)
 				rf.mu.Lock()
 				DPrintf(dElect, "[S%d] requestVote response from [S%d]\n", candidateId, peer_id)
@@ -406,7 +455,7 @@ func (rf *Raft) startElection() {
 		}
 		curVoteCount := voteCount
 		if curVoteCount > cluster_size/2 { // Won election
-			DPrintf(dElect, "[S%d] won election for term %d with %d/%d votes \n", candidateId, electionTerm, curVoteCount, cluster_size)
+			DPrintf(dWon, "[S%d] won election for term %d with %d/%d votes \n", candidateId, electionTerm, curVoteCount, cluster_size)
 			wonElection = true
 			rf.isLeader = true
 			rf.job = Leader
@@ -422,49 +471,18 @@ func (rf *Raft) startElection() {
 	rf.mu.Unlock()
 
 	if wonElection { // Start heartbeating
-		DPrintf(dBeat, "[S%d] now heartbeating term %d\n", candidateId, electionTerm)
-
-		// What happens if server gets demoted, timer expires, turns into Candidate?
-		for {
-			rf.mu.Lock()
-			if rf.term > electionTerm {
-				// No longer leader
-				break
-			}
-			if rf.job == Follower {
-				// No longer leader
-				break
-			}
-			rf.mu.Unlock()
-			for id := 0; id < len(rf.peers); id++ {
-				if id != candidateId {
-					args := AppendEntriesArgs{Term: electionTerm, LeaderId: candidateId, PrevLogIndex: 0, PrevLogTerm: 0, Entries: make([]Log, 0), LeaderCommit: -1}
-					reply := AppendEntriesReply{}
-					go func(peer_id int) {
-						rf.sendAppendEntries(peer_id, &args, &reply)
-						DPrintf(dBeat, "[S%d] hearbeat response from [S%d] with success=%t\n", candidateId, peer_id, reply.Success)
-						rf.mu.Lock()
-						if reply.Term > electionTerm {
-							rf.term = reply.Term
-							rf.job = Follower
-							rf.isLeader = false
-						}
-						rf.mu.Unlock()
-					}(id)
-				}
-			}
-			// Do I need to wait for all responses back?
-			time.Sleep(200 * time.Millisecond) // Sleep for 200 ms
-
-		}
-		rf.mu.Unlock()
+		go rf.heartBeat(candidateId, electionTerm)
+		go rf.listenAppendEntries(candidateId, electionTerm)
+		// goroutine to listen for new logs, send logs
 	}
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
-	timeout := rand.Intn(400) + 1000
+	timeRange := 200
+	baseTime := 900
+	timeout := rand.Intn(timeRange) + baseTime
 	for rf.killed() == false {
 
 		time.Sleep(time.Duration(timeout) * time.Millisecond)
@@ -472,8 +490,8 @@ func (rf *Raft) ticker() {
 		rf.mu.Lock()
 		DPrintf(dTick, "[S%d] woke up. shouldReset=%t \n", rf.me, rf.shouldReset)
 		if rf.shouldReset {
-			DPrintf(dTick, "[S%d] timer reset\n", rf.me)
-			timeout = rand.Intn(400) + 1000
+			DPrintf(dTick, "[S%d] resetting timer\n", rf.me)
+			timeout = rand.Intn(timeRange) + baseTime
 			rf.shouldReset = false
 		} else { // Timer has expired. Turn into candidate
 			if rf.job == Leader {
@@ -487,7 +505,7 @@ func (rf *Raft) ticker() {
 				rf.isLeader = false
 			}
 			rf.term += 1
-			timeout = rand.Intn(400) + 1000
+			timeout = rand.Intn(timeRange) + baseTime
 
 			// Vote for yourself
 			rf.votedFor = rf.me
@@ -525,6 +543,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.logs = make([]Log, 0)
 	nil_log := Log{Term: 0}
 	rf.logs = append(rf.logs, nil_log)
+	DPrintf(dInit, "[S%d]", rf.me)
 
 	// Your initialization code here (2A, 2B, 2C).
 
