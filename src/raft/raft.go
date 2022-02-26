@@ -373,6 +373,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		index = len(rf.logs)
 		newLog := Log{Term: term, Command: command}
 		rf.logs = append(rf.logs, newLog)
+		rf.nextIndex[rf.me] = len(rf.logs)
 		DPrintf(dStart, "[S%d] (cmd=%v) (isLeader=%t) (index=%d)", rf.me, command, isLeader, index)
 	}
 	// Go routine here to send stuff out?
@@ -403,142 +404,107 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) forwardCommits(electionTerm int) {
-	// for rf.killed() == false {
-	// 	time.Sleep(100 * time.Millisecond)
-	// 	rf.mu.Lock()
-	// 	if rf.job == Leader && rf.term == electionTerm {
-	// 		rf.matchIndex[rf.me] = len(rf.logs) - 1
-	// 		DPrintf(dCommit, "[S%d] (isLeader=%t) (currentCommit=%d) (matchIndex=%v)", rf.me, rf.job == Leader, rf.commitIndex, rf.matchIndex)
-	// 		// Try to verify one more commit and send to client
-	// 		if rf.commitIndex < len(rf.logs)-1 {
-	// 			N := rf.commitIndex + 1
-	// 			for ; N < len(rf.logs)-1; N++ {
-	// 				if rf.logs[N].Term == rf.term {
-	// 					break
-	// 				}
+	for rf.killed() == false {
+		time.Sleep(100 * time.Millisecond)
 
-	// 			} // Do I have to try future N?
-	// 			tally := 0
-	// 			for id := 0; id < len(rf.peers); id++ {
-	// 				if rf.matchIndex[id] >= N {
-	// 					tally += 1
-	// 				}
-	// 			}
-	// 			if tally > len(rf.peers)/2 {
-	// 				rf.commitIndex = N
-	// 				DPrintf(dCommit, "[S%d] (updated commit=%d)", rf.me, rf.commitIndex)
-	// 				msg := ApplyMsg{CommandValid: true, Command: rf.logs[rf.commitIndex].Command, CommandIndex: rf.commitIndex}
-	// 				DPrintf(dApply, "[S%d] (commitIndex=%d) (log=%v)", rf.me, rf.commitIndex, rf.logs[rf.commitIndex])
-	// 				rf.applyCh <- msg // Send to client
-	// 			}
-	// 		}
-	// 	} else if rf.job == Follower {
+		rf.mu.Lock()
+		if rf.job != Leader || rf.term != electionTerm {
+			rf.mu.Unlock()
+			break
+		}
+		DPrintf(dCommit, "[S%d] (isLeader=%t) (currentCommit=%d) (matchIndex=%v)", rf.me, rf.job == Leader, rf.commitIndex, rf.matchIndex)
+		rf.matchIndex[rf.me] = len(rf.logs) - 1
+		// Try to verify one more commit and send to client
+		if rf.commitIndex < len(rf.logs)-1 {
+			N := rf.commitIndex + 1
+			for ; N < len(rf.logs); N++ {
+				if rf.logs[N].Term == rf.term {
+					break
+				}
+			} // Do I have to try future N?
+			if N == len(rf.logs) { // Could not find an N
+				DPrintf(dCommit, "[S%d] could not find an N: (term=%d) (log=%v)", rf.me, rf.term, rf.logs)
+				rf.mu.Unlock()
+				break
+			}
+			DPrintf(dCommit, "[S%d] first (N=%d) of (term=%d) (log=%v)", rf.me, N, rf.term, rf.logs)
+			tally := 0
+			for id := 0; id < len(rf.peers); id++ {
+				if rf.matchIndex[id] >= N {
+					tally += 1
+				}
+			}
+			if tally > len(rf.peers)/2 {
+				rf.commitIndex = N
+				DPrintf(dCommit, "[S%d] (NEW commit=%d)", rf.me, rf.commitIndex)
+				msg := ApplyMsg{CommandValid: true, Command: rf.logs[rf.commitIndex].Command, CommandIndex: rf.commitIndex}
+				DPrintf(dApply, "[S%d] (commitIndex=%d) (log=%v)", rf.me, rf.commitIndex, rf.logs[rf.commitIndex])
+				rf.applyCh <- msg // Send to client
+			} else {
+				DPrintf(dCommit, "[S%d] invalid N (tally=%d/)", rf.me, tally, len(rf.logs))
+			}
+		}
+		// 	} else if rf.job == Follower {
+		rf.mu.Unlock()
 
-	// 	}
-	// 	rf.mu.Unlock()
-
-	// }
+	}
 }
 
 func (rf *Raft) sendAppendEntriesToAll(electionTerm int) {
-	// for id := 0; id < len(rf.peers); id++ {
-	// 	if id != rf.me {
-	// 		go func(peer_id int) {
-	// 			DPrintf(dAppendListen, "[S%d] ready for [S%d]", rf.me, peer_id)
-	// 			for rf.killed() == false {
-	// 				time.Sleep(10 * time.Millisecond) // Suggested time buffering from lab
-	// 				rf.mu.Lock()
-	// 				if rf.job == Leader && rf.term == electionTerm {
-	// 					nextIndex := rf.nextIndex[peer_id]
-	// 					logSize := len(rf.logs)
-	// 					if logSize > nextIndex {
-	// 						prevLogIndex := rf.nextIndex[peer_id] - 1
-	// 						prevLogTerm := rf.logs[prevLogIndex].Term
-	// 						leaderCommit := rf.commitIndex
-	// 						entries := rf.logs[rf.nextIndex[peer_id]:]
-	// 						args := AppendEntriesArgs{Term: rf.term, LeaderId: rf.me, PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm,
-	// 							Entries: entries, LeaderCommit: leaderCommit}
-	// 						reply := AppendEntriesReply{}
-	// 						rf.mu.Unlock()
-	// 						DPrintf(dAppendListen, "[S%d] -> [S%d] new (entries=%v)", rf.me, peer_id, entries)
-	// 						rf.sendAppendEntries(peer_id, &args, &reply)
-	// 						rf.mu.Lock()
-	// 						// Leader may have changed between these steps?
-	// 						if rf.term == args.Term {
-	// 							if reply.Success {
-	// 								rf.nextIndex[peer_id] = logSize
-	// 								rf.matchIndex[peer_id] = logSize - 1
-	// 								DPrintf(dAppendListen, "[S%d] successful replication in [S%d]", rf.me, peer_id)
-	// 								DPrintf(dAppendListen, "[S%d] (nextIndex[S%d]=%v) (matchIndex[S%d]=%v)", rf.me, peer_id, rf.nextIndex, peer_id, rf.matchIndex)
-	// 							} else if reply.Term != -1 {
-	// 								DPrintf(dDecreaseIndex, "[S%d] decrement nextIndex for [S%d]", rf.me, peer_id)
-	// 								if rf.nextIndex[peer_id] > 1 {
-	// 									rf.nextIndex[peer_id]--
-	// 								}
-	// 							}
-	// 						} else if reply.Term > rf.term { // Follower follows new leader
-	// 							DPrintf(dDemote, "[S%d] in listenAppendEntries from [S%d]. (newTerm = %d)", rf.me, peer_id, reply.Term)
-	// 							rf.term = reply.Term
-	// 							rf.job = Follower
-	// 						}
-	// 						rf.mu.Unlock()
-	// 					}
+	for id := 0; id < len(rf.peers); id++ {
+		if id != rf.me {
+			go func(peer_id int) {
+				DPrintf(dAppendListen, "[S%d] ready for [S%d]", rf.me, peer_id)
+				for rf.killed() == false {
+					time.Sleep(100 * time.Millisecond) // Suggested time buffering from lab
+					rf.mu.Lock()
+					if rf.job != Leader || rf.term != electionTerm {
+						rf.mu.Unlock()
+						break
+					}
+					nextIndex := rf.nextIndex[peer_id]
+					logSize := len(rf.logs)
+					if logSize > nextIndex {
+						prevLogIndex := rf.nextIndex[peer_id] - 1
+						prevLogTerm := rf.logs[prevLogIndex].Term
+						leaderCommit := rf.commitIndex
+						entries := rf.logs[rf.nextIndex[peer_id]:]
+						args := AppendEntriesArgs{Term: rf.term, LeaderId: rf.me, PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm,
+							Entries: entries, LeaderCommit: leaderCommit}
+						reply := AppendEntriesReply{}
+						DPrintf(dAppendListen, "[S%d] -> [S%d] new (entries=%v)", rf.me, peer_id, entries)
+						rf.mu.Unlock()
 
-	// 				} else {
-	// 					rf.mu.Unlock()
-	// 					break
-	// 				}
+						rf.sendAppendEntries(peer_id, &args, &reply)
+						rf.mu.Lock()
+						// Leader may have changed between these steps?
+						if rf.term == electionTerm && rf.term == reply.Term {
+							if reply.Success {
+								rf.nextIndex[peer_id] = logSize
+								rf.matchIndex[peer_id] = logSize - 1
+								DPrintf(dAppendListen, "[S%d] successful replication in [S%d]", rf.me, peer_id)
+								DPrintf(dAppendListen, "[S%d] (nextIndex[S%d]=%v) (matchIndex[S%d]=%v)", rf.me, peer_id, rf.nextIndex, peer_id, rf.matchIndex)
+							} else if reply.Term != -1 {
+								DPrintf(dDecreaseIndex, "[S%d] decrement nextIndex for [S%d]", rf.me, peer_id)
+								if rf.nextIndex[peer_id] > 1 {
+									rf.nextIndex[peer_id]--
+								}
+							}
+						} else if reply.Term > rf.term { // Follower follows new leader
+							DPrintf(dDemote, "[S%d] in listenAppendEntries from [S%d]. (newTerm = %d)", rf.me, peer_id, reply.Term)
+							rf.term = reply.Term
+							rf.job = Follower
+						}
+						rf.mu.Unlock()
+					} else {
+						rf.mu.Unlock()
+					}
+				}
+			}(id)
+		}
 
-	// 			}
-	// 		}(id)
-	// 	}
-
-	// }
+	}
 }
-
-// func (rf *Raft) heartBeat(candidateId int, electionTerm int) {
-// 	DPrintf(dBeat, "[S%d] now heartbeating term %d\n", candidateId, electionTerm)
-
-// 	// What happens if server gets demoted, timer expires, turns into Candidate?
-// 	lastBeatTime := time.Time{}
-// 	for {
-// 		rf.mu.Lock()
-// 		if rf.term > electionTerm || rf.job == Follower {
-// 			rf.mu.Unlock()
-// 			break
-// 		}
-// 		rf.mu.Unlock()
-// 		if time.Since(lastBeatTime).Milliseconds() > 200 {
-// 			for id := 0; id < len(rf.peers); id++ {
-// 				if id != candidateId {
-// 					rf.mu.Lock()
-// 					prevLogIndex := rf.nextIndex[id] - 1
-// 					prevLogTerm := rf.logs[rf.nextIndex[id]-1].Term
-// 					leaderCommit := rf.commitIndex
-// 					rf.mu.Unlock()
-
-// 					args := AppendEntriesArgs{Term: electionTerm, LeaderId: candidateId, PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm, Entries: make([]Log, 0), LeaderCommit: leaderCommit}
-// 					reply := AppendEntriesReply{}
-// 					go func(peer_id int) {
-// 						rf.sendAppendEntries(peer_id, &args, &reply)
-// 						DPrintf(dBeat, "[S%d] -> [S%d] (reply.Success=%t) (reply.term=%d)\n", candidateId, peer_id, reply.Success, reply.Term)
-// 						rf.mu.Lock()
-// 						if reply.Term > electionTerm {
-// 							DPrintf(dDemote, "[S%d] in heartBeat() (old term=%d)->(new term %d)", candidateId, electionTerm, reply.Term)
-// 							rf.term = reply.Term
-// 							rf.job = Follower
-// 							rf.isLeader = false
-// 						}
-// 						rf.mu.Unlock()
-// 					}(id)
-// 				} else { // When leader
-
-// 				}
-// 			}
-// 			lastBeatTime = time.Now()
-// 		}
-// 	}
-// }
 
 func (rf *Raft) heartBeat(electionTerm int) {
 	// What happens if server gets demoted, timer expires, turns into Candidate?
@@ -566,7 +532,7 @@ func (rf *Raft) heartBeat(electionTerm int) {
 					rf.sendAppendEntries(peer_id, &args, &reply)
 
 					rf.mu.Lock()
-					if electionTerm == reply.Term {
+					if rf.term == electionTerm && electionTerm == reply.Term {
 						if reply.Success {
 							DPrintf(dBeat, "[S%d] -> [S%d] response success (reply.term=%d)\n", rf.me, peer_id, reply.Term)
 						} else if reply.Term != -1 {
@@ -677,7 +643,7 @@ func (rf *Raft) startElection(electionTerm int) {
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	timeRange := 300
-	baseTime := 1000
+	baseTime := 700
 	timeout := rand.Intn(timeRange) + baseTime
 	for rf.killed() == false {
 
