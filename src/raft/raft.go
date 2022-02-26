@@ -412,8 +412,8 @@ func (rf *Raft) forwardCommits(electionTerm int) {
 			rf.mu.Unlock()
 			break
 		}
-		DPrintf(dCommit, "[S%d] (isLeader=%t) (currentCommit=%d) (matchIndex=%v)", rf.me, rf.job == Leader, rf.commitIndex, rf.matchIndex)
 		rf.matchIndex[rf.me] = len(rf.logs) - 1
+		DPrintf(dCommit, "[S%d] (isLeader=%t) (currentCommit=%d) (matchIndex=%v)", rf.me, rf.job == Leader, rf.commitIndex, rf.matchIndex)
 		// Try to verify one more commit and send to client
 		if rf.commitIndex < len(rf.logs)-1 {
 			N := rf.commitIndex + 1
@@ -425,7 +425,7 @@ func (rf *Raft) forwardCommits(electionTerm int) {
 			if N == len(rf.logs) { // Could not find an N
 				DPrintf(dCommit, "[S%d] could not find an N: (term=%d) (log=%v)", rf.me, rf.term, rf.logs)
 				rf.mu.Unlock()
-				break
+				continue
 			}
 			DPrintf(dCommit, "[S%d] first (N=%d) of (term=%d) (log=%v)", rf.me, N, rf.term, rf.logs)
 			tally := 0
@@ -435,13 +435,15 @@ func (rf *Raft) forwardCommits(electionTerm int) {
 				}
 			}
 			if tally > len(rf.peers)/2 {
+				for i := rf.commitIndex + 1; i <= N; i++ {
+					DPrintf(dCommit, "[S%d] (NEW commit=%d)", rf.me, i)
+					msg := ApplyMsg{CommandValid: true, Command: rf.logs[i].Command, CommandIndex: i}
+					DPrintf(dApply, "[S%d] (commitIndex=%d) (log=%v)", rf.me, i, rf.logs[i])
+					rf.applyCh <- msg // Send to client
+				}
 				rf.commitIndex = N
-				DPrintf(dCommit, "[S%d] (NEW commit=%d)", rf.me, rf.commitIndex)
-				msg := ApplyMsg{CommandValid: true, Command: rf.logs[rf.commitIndex].Command, CommandIndex: rf.commitIndex}
-				DPrintf(dApply, "[S%d] (commitIndex=%d) (log=%v)", rf.me, rf.commitIndex, rf.logs[rf.commitIndex])
-				rf.applyCh <- msg // Send to client
 			} else {
-				DPrintf(dCommit, "[S%d] invalid N (tally=%d/)", rf.me, tally, len(rf.logs))
+				DPrintf(dCommit, "[S%d] invalid N (tally=%d/%d)", rf.me, tally, len(rf.peers))
 			}
 		}
 		// 	} else if rf.job == Follower {
@@ -535,6 +537,8 @@ func (rf *Raft) heartBeat(electionTerm int) {
 					if rf.term == electionTerm && electionTerm == reply.Term {
 						if reply.Success {
 							DPrintf(dBeat, "[S%d] -> [S%d] response success (reply.term=%d)\n", rf.me, peer_id, reply.Term)
+							rf.matchIndex[peer_id] = prevLogIndex
+							// Set matchIndex here?
 						} else if reply.Term != -1 {
 							DPrintf(dDecreaseIndex, "[S%d] for [S%d]", rf.me, peer_id)
 							DPrintf(dBeat, "[S%d] decrement nextIndex for [S%d] (oldIndex=%d)", rf.me, peer_id, rf.nextIndex[peer_id])
