@@ -24,7 +24,7 @@ TOPICS = {
     "AE": "#00813c",
     "AL": "#fe2c79",
     "DEMOTE": "#ffffff",
-    "COMMIT": "#d08341",
+    "COMMIT": "#803361",
     "APPLY": "#fe2626",
     "TRCE": "#fe2626",
 }

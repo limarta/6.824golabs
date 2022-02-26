@@ -208,24 +208,38 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//Check if leader, follower, candidate?
 	rf.mu.Lock()
-	DPrintf(dReqVote, "[S%d] received from [S%d] for term %d\n", rf.me, args.CandidateId, args.Term)
+	DPrintf(dReqVote, "[S%d] (term=%d) <- [S%d] (election term=%d)\n", rf.me, rf.term, args.CandidateId, args.Term)
 	// TODO: Must check Complete Leader condition. Incomplete right now.
 	if rf.term > args.Term { // Candidate is old. Reject.
-		DPrintf(dReqVote, "[S%d] (term = %d) old RequestVote from [S%d] (term = %d)\n", rf.me, rf.term, args.CandidateId, args.Term)
+		DPrintf(dReqVote, "[S%d] ignored VoteReq from [S%d]", rf.me, args.CandidateId)
 		reply.Term = rf.term
 		reply.VoteGranted = false
 	} else if rf.term < args.Term {
-		DPrintf(dReqVote, "[S%d] (term = %d) valid RequestVote from [S%d] (term = %d)\n", rf.me, rf.term, args.CandidateId, args.Term)
+		DPrintf(dReqVote, "[S%d] valid VoteReq [S%d]. Soft demotion", rf.me, args.CandidateId)
 		rf.term = args.Term
 		rf.job = Follower
 		rf.isLeader = false
-		rf.votedFor = args.CandidateId
-		rf.shouldReset = true
-		DPrintf(dReqVote, "[S%d] accepted requestVote from [S%d], (new term %d) (job %d) isLeader %t votedFor %d shouldReset %t\n", rf.me, args.Term, rf.term, rf.job, rf.isLeader, rf.votedFor, rf.shouldReset)
-		reply.Term = rf.term
-		reply.VoteGranted = true
+		// Election Restriction
+		if args.LastLogTerm > rf.logs[len(rf.logs)-1].Term { // Candidate is more up to date
+			rf.votedFor = args.CandidateId
+			rf.shouldReset = true
+			reply.Term = rf.term
+			reply.VoteGranted = true
+			DPrintf(dReqVote, "[S%d] ACCEPTED [S%d]. Last log higher term", rf.me, args.CandidateId)
+		} else if args.LastLogTerm == rf.logs[len(rf.logs)-1].Term && args.LastLogIndex >= len(rf.logs)-1 { // Candidate is more upt o date
+			rf.votedFor = args.CandidateId
+			rf.shouldReset = true
+			reply.Term = rf.term
+			reply.VoteGranted = true
+			DPrintf(dReqVote, "[S%d] ACCEPTED [S%d]. Equal term. Higher index", rf.me, args.CandidateId)
+		} else { // Voter is more up to date // Make sure candidate does not call itself
+			DPrintf(dReqVote, "[S%d] REJECTED [S%d]", rf.me, args.CandidateId)
+			// rf.votedFor = -1 //?
+			reply.Term = rf.term
+			reply.VoteGranted = false
+		}
 	} else {
-		reply.Term = rf.term
+		reply.Term = rf.term // Same term. Make sure candidate doesn't call on itself
 		reply.VoteGranted = false
 	}
 	rf.mu.Unlock()
@@ -242,7 +256,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term = rf.term // For old leader to update itself
 		rf.mu.Unlock()
 		return
-	} else if rf.job == Leader && rf.term < args.Term { // Server is outdated. Note: What about rf.term == args.term?
+	} else if (rf.job == Leader || rf.job == Follower) && rf.term < args.Term { // Server is outdated. Note: What about rf.term == args.term?
 		DPrintf(dDemote, "[S%d] in AppendEntries() from Leader", rf.me)
 		rf.term = args.Term
 		rf.job = Follower
@@ -253,7 +267,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.job = Follower
 		rf.isLeader = false
 	}
-
 	rf.shouldReset = true // Reset heartbeat?
 
 	if len(args.Entries) == 0 {
@@ -286,7 +299,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf(dAppend, "[S%d] updated (old commitIndex=%d) (new commitIndex=%d)", rf.me, rf.commitIndex, newCommitIndex)
 		for i := rf.commitIndex + 1; i <= newCommitIndex; i++ {
 			msg := ApplyMsg{CommandValid: true, Command: rf.logs[i].Command, CommandIndex: i}
-			DPrintf(dApply, "[S%d] commitIndex=%d", rf.me, i)
+			DPrintf(dApply, "[S%d] commitIndex=%d (log=%v)", rf.me, i, rf.logs[i])
 			rf.applyCh <- msg // Send to client
 		}
 		rf.commitIndex = newCommitIndex
@@ -304,15 +317,14 @@ func min(x int, y int) int {
 
 func (rf *Raft) updateLeaderCommit(candidateId int, electionTerm int) {
 	for {
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 		rf.mu.Lock()
 		if rf.term > electionTerm || rf.job == Follower {
 			rf.mu.Unlock()
 			break
 		}
-		DPrintf(dCommit, "[S%d] (oldCommit=%d) (old nextIndex=%v) (old matchIndex=%v)", rf.me, rf.commitIndex, rf.nextIndex, rf.matchIndex)
-		rf.nextIndex[rf.me] = len(rf.logs)
-		rf.matchIndex[rf.me] = len(rf.logs)
+		rf.matchIndex[rf.me] = len(rf.logs) - 1
+		DPrintf(dCommit, "[S%d] (isLeader=%t) (oldCommit=%d) (new matchIndex=%v)", rf.me, rf.job == Leader, rf.commitIndex, rf.matchIndex)
 		// Try to verify one more commit and send to client
 		if rf.commitIndex < len(rf.logs)-1 {
 			N := rf.commitIndex + 1
@@ -326,7 +338,7 @@ func (rf *Raft) updateLeaderCommit(candidateId int, electionTerm int) {
 				rf.commitIndex = N
 				DPrintf(dCommit, "[S%d] (updated commit=%d)", rf.me, rf.commitIndex)
 				msg := ApplyMsg{CommandValid: true, Command: rf.logs[rf.commitIndex].Command, CommandIndex: rf.commitIndex}
-				DPrintf(dApply, "[S%d] (commitIndex=%d)", rf.me, rf.commitIndex)
+				DPrintf(dApply, "[S%d] (commitIndex=%d) (log=%v)", rf.me, rf.commitIndex, rf.logs[rf.commitIndex])
 				rf.applyCh <- msg // Send to client
 			}
 		}
@@ -463,7 +475,7 @@ func (rf *Raft) listenAppendEntries(candidateId int, electionTerm int) {
 							// Decrement nextIndex carefully
 						} else if reply.Success {
 							rf.nextIndex[peer_id] = logSize
-							rf.matchIndex[peer_id] = logSize
+							rf.matchIndex[peer_id] = logSize - 1
 							DPrintf(dAppendListen, "[S%d] successful replication in [S%d]", rf.me, peer_id)
 							DPrintf(dAppendListen, "[S%d] (nextIndex[S%d]=%v) (matchIndex[S%d]=%v)", rf.me, peer_id, rf.nextIndex, peer_id, rf.matchIndex)
 						} else {
@@ -506,7 +518,7 @@ func (rf *Raft) heartBeat(candidateId int, electionTerm int) {
 						DPrintf(dBeat, "[S%d] -> [S%d] [reply.Success=%t]\n", candidateId, peer_id, reply.Success)
 						rf.mu.Lock()
 						if reply.Term > electionTerm {
-							DPrintf(dBeat, "[S%d] in heartBeat()", candidateId)
+							DPrintf(dDemote, "[S%d] in heartBeat() (old term=%d)->(new term %d)", candidateId, electionTerm, reply.Term)
 							rf.term = reply.Term
 							rf.job = Follower
 							rf.isLeader = false
@@ -528,7 +540,10 @@ func (rf *Raft) startElection() {
 	electionTerm := rf.term
 	candidateId := rf.me
 	cluster_size := len(rf.peers)
-	DPrintf(dElect, "[S%d] hosts election term %d\n", candidateId, electionTerm)
+	lastLogIndex := len(rf.logs) - 1
+	lastLogTerm := rf.logs[len(rf.logs)-1].Term
+	DPrintf(dElect, "[S%d] hosts (election term %d) (lastLogIndex=%d) (lastLogTerm=%d)", candidateId, electionTerm, lastLogIndex, lastLogTerm)
+	DPrintf(dElect, "[S%d] candidate log: %v", rf.me, rf.logs)
 	rf.mu.Unlock()
 
 	voteCount := 1
@@ -536,13 +551,13 @@ func (rf *Raft) startElection() {
 
 	for id := 0; id < len(rf.peers); id++ {
 		if id != candidateId {
-			args := RequestVoteArgs{Term: electionTerm, CandidateId: candidateId, LastLogIndex: -1, LastLogTerm: -1}
+			args := RequestVoteArgs{Term: electionTerm, CandidateId: candidateId, LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm}
 			reply := RequestVoteReply{}
 			go func(peer_id int) {
 				DPrintf(dElect, "[S%d] -> [S%d] voteReq", candidateId, peer_id)
 				rf.sendRequestVote(peer_id, &args, &reply)
 				rf.mu.Lock()
-				DPrintf(dElect, "[S%d] <- [S%d] voteResponse\n", candidateId, peer_id)
+				DPrintf(dElect, "[S%d] <- [S%d] voteResponse", candidateId, peer_id)
 				if reply.Term > electionTerm {
 					DPrintf(dDemote, "[S%d] in startElection polling", candidateId)
 					rf.term = reply.Term
@@ -582,6 +597,7 @@ func (rf *Raft) startElection() {
 			}
 			break
 		} else if responses-curVoteCount > cluster_size/2 { // Lost election
+			DPrintf(dLoss, "[S%d] lost for term %d with %d/%d votes", candidateId, electionTerm, responses-curVoteCount, cluster_size)
 			// Don't just demote to follower. Probably just stop this election.
 			break
 		} else { // Undetermined election

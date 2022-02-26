@@ -25,6 +25,7 @@ const (
 	dDemote       logTopic = "DEMOTE"
 	dCommit       logTopic = "COMMIT"
 	dApply        logTopic = "APPLY"
+	dLoss         logTopic = "LOST"
 )
 
 // Debugging
