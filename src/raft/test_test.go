@@ -23,7 +23,6 @@ const RaftElectionTimeout = 1000 * time.Millisecond
 
 func TestInitialElection2A(t *testing.T) {
 	servers := 3
-	setVerbosity()
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
 
@@ -216,7 +215,6 @@ func TestFailAgree2B(t *testing.T) {
 
 func TestFailNoAgree2B(t *testing.T) {
 	servers := 5
-	setVerbosity()
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
 
