@@ -31,6 +31,7 @@ TOPICS = {
     "DECINDX": "#222233",
     "BEAT2": "#d08341",
     "IGNORE": "#dd8d4d",
+    "NEWTERM": "#444444"
 }
 
 def list_topics(value: Optional[str]):
@@ -91,7 +92,7 @@ def main(
 
             # Single column printing. Always the case for debug stmts in tests
             if n_columns is None or topic == "TEST":
-                print(msg)
+                print(time, msg)
             # Multi column printing, timing is dropped to maximize horizontal
             # space. Heavylifting is done through rich.column.Columns object
             else:
