@@ -211,7 +211,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	DPrintf(dReqVote, "[S%d] (term=%d) <- [S%d] (election term=%d)\n", rf.me, rf.term, args.CandidateId, args.Term)
 	// TODO: Must check Complete Leader condition. Incomplete right now.
 	if rf.term > args.Term { // Candidate is old. Reject.
-		DPrintf(dReqVote, "[S%d] ignored VoteReq from [S%d]", rf.me, args.CandidateId)
+		DPrintf(dIgnore, "[S%d] VoteReq from [S%d]", rf.me, args.CandidateId)
 		reply.Term = rf.term
 		reply.VoteGranted = false
 	} else if rf.term < args.Term {
@@ -248,10 +248,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// Make sure server has been initialized before others servers can successfully append/get votes
 
-	DPrintf(dAppend, "[S%d] <- [S%d]", rf.me, args.LeaderId)
+	DPrintf(dBeat, "[S%d] <- [S%d]", rf.me, args.LeaderId)
 	rf.mu.Lock()
 	if rf.term > args.Term { // Received AppendEntries from old leader
-		DPrintf(dAppend, "[S%d] ignored AE", rf.me)
+		DPrintf(dIgnore, "[S%d] AppendEntry from [S%d]", rf.me, args.LeaderId)
 		reply.Success = false
 		reply.Term = rf.term // For old leader to update itself
 		rf.mu.Unlock()
@@ -267,10 +267,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.job = Follower
 		rf.isLeader = false
 	}
-	rf.shouldReset = true // Reset heartbeat?
+
+	rf.shouldReset = true // Is this correct?
+	reply.Term = rf.term
 
 	if len(args.Entries) == 0 {
 		DPrintf(dAppend, "[S%d] received heartbeat [S%d]", rf.me, args.LeaderId)
+		DPrintf(dBeat2, "[S%d] received heartbeat [S%d] (commitIndex=%d)", rf.me, args.LeaderId, rf.commitIndex)
 	}
 	if len(rf.logs)-1 < args.PrevLogIndex { // Missing logs
 		DPrintf(dAppend, "[S%d] missing logs (len(rf.logs)=%d) (prevLogIndex=%d)", rf.me, len(rf.logs), args.PrevLogIndex)
@@ -286,23 +289,23 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		reply.Term = rf.term
 	}
-	if len(rf.logs)-1 == args.PrevLogIndex && rf.logs[len(rf.logs)-1].Term == args.PrevLogTerm { // Append logs
+	if len(rf.logs)-1 == args.PrevLogIndex && rf.logs[len(rf.logs)-1].Term == args.PrevLogTerm { // Append logs also includes empty ones
 		if len(args.Entries) != 0 {
 			DPrintf(dAppend, "[S%d] APPENDED (old log=%v) (new log=%v)", rf.me, rf.logs, append(rf.logs, args.Entries...))
 		}
 		rf.logs = append(rf.logs, args.Entries...)
 		reply.Success = true
 		reply.Term = rf.term
-	}
-	if rf.commitIndex < args.LeaderCommit {
-		newCommitIndex := min(args.LeaderCommit, len(rf.logs)-1)
-		DPrintf(dAppend, "[S%d] updated (old commitIndex=%d) (new commitIndex=%d)", rf.me, rf.commitIndex, newCommitIndex)
-		for i := rf.commitIndex + 1; i <= newCommitIndex; i++ {
-			msg := ApplyMsg{CommandValid: true, Command: rf.logs[i].Command, CommandIndex: i}
-			DPrintf(dApply, "[S%d] commitIndex=%d (log=%v)", rf.me, i, rf.logs[i])
-			rf.applyCh <- msg // Send to client
+		if rf.commitIndex < args.LeaderCommit {
+			newCommitIndex := min(args.LeaderCommit, len(rf.logs)-1)
+			DPrintf(dAppend, "[S%d] updated (old commitIndex=%d) (new commitIndex=%d)", rf.me, rf.commitIndex, newCommitIndex)
+			for i := rf.commitIndex + 1; i <= newCommitIndex; i++ {
+				msg := ApplyMsg{CommandValid: true, Command: rf.logs[i].Command, CommandIndex: i}
+				DPrintf(dApply, "[S%d] commitIndex=%d (log=%v)", rf.me, i, rf.logs[i])
+				rf.applyCh <- msg // Send to client
+			}
+			rf.commitIndex = newCommitIndex
 		}
-		rf.commitIndex = newCommitIndex
 	}
 	rf.mu.Unlock()
 }
@@ -403,6 +406,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		index = len(rf.logs)
 		newLog := Log{Term: term, Command: command}
 		rf.logs = append(rf.logs, newLog)
+		DPrintf(dStartAccept, "[S%d] (cmd=%v) (isLeader=%t) (index=%d)", rf.me, command, isLeader, index)
 	}
 	DPrintf(dStart, "[S%d] (cmd=%v) (isLeader=%t) (index=%d)", rf.me, command, isLeader, index)
 	// Go routine here to send stuff out?
@@ -463,12 +467,12 @@ func (rf *Raft) listenAppendEntries(candidateId int, electionTerm int) {
 						rf.sendAppendEntries(peer_id, &args, &reply)
 						rf.mu.Lock()
 						if reply.Term > electionTerm { // Follower follows new leader
-							DPrintf(dDemote, "[S%d] in listenAppendEntries. [newTerm = %d]", reply.Term)
+							DPrintf(dDemote, "[S%d] in listenAppendEntries from [S%d]. (newTerm = %d)", rf.me, peer_id, reply.Term)
 							rf.term = reply.Term
 							rf.job = Follower
 							rf.isLeader = false
 						} else if reply.Success == false {
-							DPrintf(dAppendListen, "[S%d] decrement nextIndex for [S%d]", rf.me, peer_id)
+							DPrintf(dDecreaseIndex, "[S%d] decrement nextIndex for [S%d]", rf.me, peer_id)
 							if rf.nextIndex[peer_id] > 1 {
 								rf.nextIndex[peer_id]--
 							}
@@ -515,7 +519,7 @@ func (rf *Raft) heartBeat(candidateId int, electionTerm int) {
 					reply := AppendEntriesReply{}
 					go func(peer_id int) {
 						rf.sendAppendEntries(peer_id, &args, &reply)
-						DPrintf(dBeat, "[S%d] -> [S%d] [reply.Success=%t]\n", candidateId, peer_id, reply.Success)
+						DPrintf(dBeat, "[S%d] -> [S%d] (reply.Success=%t) (reply.term=%d)\n", candidateId, peer_id, reply.Success, reply.Term)
 						rf.mu.Lock()
 						if reply.Term > electionTerm {
 							DPrintf(dDemote, "[S%d] in heartBeat() (old term=%d)->(new term %d)", candidateId, electionTerm, reply.Term)
@@ -625,7 +629,9 @@ func (rf *Raft) ticker() {
 		time.Sleep(time.Duration(timeout) * time.Millisecond)
 
 		rf.mu.Lock()
-		DPrintf(dTick, "[S%d] woke up\n", rf.me)
+		DPrintf(dTick, "[S%d] woke up", rf.me)
+		DPrintf(dLogs, "[S%d]: %v", rf.me, rf.logs)
+		DPrintf(dCommit2, "[S%d]: %v", rf.me, rf.commitIndex)
 		if rf.shouldReset {
 			DPrintf(dTick, "[S%d] resetting timer\n", rf.me)
 			timeout = rand.Intn(timeRange) + baseTime
@@ -633,7 +639,7 @@ func (rf *Raft) ticker() {
 		} else { // Timer has expired. Turn into candidate
 			DPrintf(dTick, "[S%d] timer expired\n", rf.me)
 			if rf.job == Leader {
-				DPrintf(dTick, "[S%d] is leader\n", rf.me)
+				DPrintf(dLeader, "[S%d] is leader (term=%d)\n", rf.me, rf.term)
 				rf.mu.Unlock()
 				continue
 			}

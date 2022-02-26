@@ -11,22 +11,32 @@ import (
 type logTopic string
 
 const (
-	dInit         logTopic = "INIT"
-	dLeader       logTopic = "LEAD"
-	dStart        logTopic = "START"
-	dReqVote      logTopic = "REQVOTE"
-	dTimer        logTopic = "TIMER"
-	dElect        logTopic = "ELECT"
-	dBeat         logTopic = "BEAT"
-	dTick         logTopic = "TICK"
-	dWon          logTopic = "WON"
-	dAppend       logTopic = "AE"
-	dAppendListen logTopic = "AL"
-	dDemote       logTopic = "DEMOTE"
-	dCommit       logTopic = "COMMIT"
-	dApply        logTopic = "APPLY"
-	dLoss         logTopic = "LOST"
+	dInit          logTopic = "INIT"
+	dLeader        logTopic = "LEAD"
+	dStart         logTopic = "START"
+	dReqVote       logTopic = "REQVOTE"
+	dTimer         logTopic = "TIMER"
+	dElect         logTopic = "ELECT"
+	dBeat          logTopic = "BEAT"
+	dTick          logTopic = "TICK"
+	dWon           logTopic = "WON"
+	dAppend        logTopic = "AE"
+	dAppendListen  logTopic = "AL"
+	dDemote        logTopic = "DEMOTE"
+	dCommit        logTopic = "COMMIT"
+	dApply         logTopic = "APPLY"
+	dLoss          logTopic = "LOST"
+	dLogs          logTopic = "LOGS"
+	dStartAccept   logTopic = "START"
+	dCommit2       logTopic = "COMMIT2"
+	dDecreaseIndex logTopic = "DECINDEX"
+	dBeat2         logTopic = "BEAT2"
+	dIgnore        logTopic = "IGNORE"
 )
+
+var debug_2 map[logTopic]int = map[logTopic]int{dApply: 1, dWon: 1, dLogs: 1, dInit: 1, dStartAccept: 1, dCommit2: 1, dDecreaseIndex: 1, dBeat: 1, dDemote: 1, dLeader: 1, dBeat2: 1}
+
+// var debug_1 map[logTopic]int = map[logTopic]int{d}
 
 // Debugging
 const Debug = false
@@ -56,15 +66,15 @@ func resetVerbosity() int {
 }
 
 func DPrintf(dTopic logTopic, format string, a ...interface{}) (n int, err error) {
+	time := time.Since(debugStart).Microseconds()
+	prefix := fmt.Sprintf("%06d %-7v ", time, string(dTopic))
+	format = prefix + format
 	if debugVerbosity == 1 {
-		time := time.Since(debugStart).Microseconds()
-		prefix := fmt.Sprintf("%06d %-7v ", time, string(dTopic))
-		format = prefix + format
 		log.Printf(format, a...)
 	} else if debugVerbosity == 2 {
-		prefix := fmt.Sprintf("%-7v ", string(dTopic))
-		format = prefix + format
-		log.Printf(format, a...)
+		if _, ok := debug_2[dTopic]; ok {
+			log.Printf(format, a...)
+		}
 	}
 	return
 }

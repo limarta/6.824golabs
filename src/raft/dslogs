@@ -26,7 +26,11 @@ TOPICS = {
     "DEMOTE": "#ffffff",
     "COMMIT": "#803361",
     "APPLY": "#fe2626",
-    "TRCE": "#fe2626",
+    "LOGS": "#fe7676",
+    "COMMIT2": "#103391",
+    "DECINDX": "#222233",
+    "BEAT2": "#d08341",
+    "IGNORE": "#dd8d4d",
 }
 
 def list_topics(value: Optional[str]):
