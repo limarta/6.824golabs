@@ -19,7 +19,6 @@ package raft
 
 import (
 	//	"bytes"
-
 	"math/rand"
 	"sync"
 	"sync/atomic"
