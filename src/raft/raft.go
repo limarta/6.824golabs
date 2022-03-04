@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 	"bytes"
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -311,8 +312,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		} else {
 			rf.logs = rf.logs[0:args.PrevLogIndex]
 			reply.Success = false
-			reply.ConflictTerm = len(rf.logs)
-			reply.ConflictIndex = -1
+			reply.ConflictIndex = len(rf.logs)
+			reply.ConflictTerm = -1
 		}
 	}
 	if len(rf.logs)-1 == args.PrevLogIndex {
@@ -339,6 +340,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		} else { // Right index but wrong term
 			reply.ConflictTerm = rf.logs[args.PrevLogIndex].Term
 			i := len(rf.logs) - 1
+
 			for i >= 0 {
 				if rf.logs[i].Term == reply.ConflictTerm {
 					i--
@@ -455,7 +457,7 @@ func (rf *Raft) killed() bool {
 // guarantees that such logs may be committed.
 func (rf *Raft) forwardCommits(electionTerm int) {
 	for rf.killed() == false {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		rf.mu.Lock()
 		if rf.job != Leader || rf.term != electionTerm {
@@ -532,17 +534,32 @@ func (rf *Raft) sendAppendEntriesToAll(electionTerm int) {
 						rf.sendAppendEntries(peer_id, &args, &reply)
 						rf.mu.Lock()
 						// Leader may have changed between these steps?
-						// Log Optimization here
 						if rf.term == electionTerm && rf.term == reply.Term {
 							if reply.Success {
 								rf.nextIndex[peer_id] = logSize
 								rf.matchIndex[peer_id] = logSize - 1
 								DPrintf(dAppendListen, "[S%d] successful replication in [S%d]", rf.me, peer_id)
 								DPrintf(dAppendListen, "[S%d] (nextIndex[S%d]=%v) (matchIndex[S%d]=%v)", rf.me, peer_id, rf.nextIndex, peer_id, rf.matchIndex)
-							} else if reply.Term != -1 {
+							} else {
+								// Log Optimization here
 								DPrintf(dDecreaseIndex, "[S%d] decrement nextIndex for [S%d]", rf.me, peer_id)
-								if rf.nextIndex[peer_id] > 1 {
-									rf.nextIndex[peer_id]--
+								if reply.ConflictIndex == -1 {
+									fmt.Println("Why conflictindex = -1?")
+								}
+								if reply.ConflictTerm == -1 {
+									rf.nextIndex[peer_id] = reply.ConflictIndex
+								} else {
+									found := false
+									for i := len(rf.logs) - 1; i >= 0; i-- {
+										if rf.logs[i].Term == reply.ConflictTerm {
+											rf.nextIndex[peer_id] = i + 1
+											found = true
+											break
+										}
+									}
+									if !found {
+										rf.nextIndex[peer_id] = reply.ConflictIndex
+									}
 								}
 							}
 						} else if reply.Term > rf.term { // Follower follows new leader
@@ -577,7 +594,7 @@ func (rf *Raft) heartBeat(electionTerm int) {
 			if id != rf.me {
 				rf.mu.Lock()
 				prevLogIndex := rf.nextIndex[id] - 1
-				prevLogTerm := rf.logs[rf.nextIndex[id]-1].Term
+				prevLogTerm := rf.logs[prevLogIndex].Term
 				leaderCommit := rf.commitIndex
 
 				args := AppendEntriesArgs{Term: electionTerm, LeaderId: rf.me, PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm, Entries: make([]Log, 0), LeaderCommit: leaderCommit}
@@ -588,16 +605,33 @@ func (rf *Raft) heartBeat(electionTerm int) {
 					rf.sendAppendEntries(peer_id, &args, &reply)
 
 					rf.mu.Lock()
+					// Log OPTIMIZATIONS
 					if rf.term == electionTerm && electionTerm == reply.Term {
 						if reply.Success {
 							DPrintf(dBeat, "[S%d] -> [S%d] response success (reply.term=%d)\n", rf.me, peer_id, reply.Term)
 							rf.matchIndex[peer_id] = prevLogIndex
 							// Set matchIndex here?
-						} else if reply.Term != -1 {
+						} else {
+							// // Log Optimization here
 							DPrintf(dDecreaseIndex, "[S%d] for [S%d]", rf.me, peer_id)
 							DPrintf(dBeat, "[S%d] decrement nextIndex for [S%d] (oldIndex=%d)", rf.me, peer_id, rf.nextIndex[peer_id])
-							if rf.nextIndex[peer_id] > 1 {
-								rf.nextIndex[peer_id]--
+							if reply.ConflictIndex == -1 {
+								fmt.Println("Why conflictindex = -1?")
+							}
+							if reply.ConflictTerm == -1 {
+								rf.nextIndex[peer_id] = reply.ConflictIndex
+							} else {
+								found := false
+								for i := len(rf.logs) - 1; i >= 0; i-- {
+									if rf.logs[i].Term == reply.ConflictTerm {
+										rf.nextIndex[peer_id] = i + 1
+										found = true
+										break
+									}
+								}
+								if !found {
+									rf.nextIndex[peer_id] = reply.ConflictIndex
+								}
 							}
 						}
 					} else if electionTerm < reply.Term { // Follower follows new leader
@@ -612,7 +646,7 @@ func (rf *Raft) heartBeat(electionTerm int) {
 
 			}
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -688,6 +722,7 @@ func (rf *Raft) startElection(electionTerm int) {
 		} else { // Undetermined election
 			// TODO: Make sure that timer expires to break out of here
 		}
+		time.Sleep(10 * time.Millisecond)
 		rf.mu.Unlock()
 	}
 	rf.mu.Unlock()
@@ -702,8 +737,8 @@ func (rf *Raft) startElection(electionTerm int) {
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
-	timeRange := 300
-	baseTime := 700
+	timeRange := 250
+	baseTime := 250
 	timeout := rand.Intn(timeRange) + baseTime
 	for rf.killed() == false {
 
@@ -733,6 +768,7 @@ func (rf *Raft) ticker() {
 
 			// Vote for yourself
 			rf.votedFor = rf.me
+			rf.persist()
 			go rf.startElection(rf.term)
 		}
 		rf.mu.Unlock()
