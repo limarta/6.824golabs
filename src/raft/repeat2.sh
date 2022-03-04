@@ -1,5 +1,5 @@
 #!/bin/bash
-while (go test -run 2A -race)
+while (go test -run 2B)
 do
 	echo "unk"
 done

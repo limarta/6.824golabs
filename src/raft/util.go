@@ -1,17 +1,52 @@
 package raft
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strconv"
+	"time"
 )
+
+type logTopic string
+
+const (
+	dInit          logTopic = "INIT"
+	dLeader        logTopic = "LEAD"
+	dStart         logTopic = "START"
+	dReqVote       logTopic = "REQVOTE"
+	dTimer         logTopic = "TIMER"
+	dElect         logTopic = "ELECT"
+	dBeat          logTopic = "BEAT"
+	dTick          logTopic = "TICK"
+	dWon           logTopic = "WON"
+	dAppend        logTopic = "AE"
+	dAppendListen  logTopic = "AL"
+	dDemote        logTopic = "DEMOTE"
+	dCommit        logTopic = "COMMIT"
+	dApply         logTopic = "APPLY"
+	dLoss          logTopic = "LOST"
+	dLogs          logTopic = "LOGS"
+	dStartAccept   logTopic = "START"
+	dCommit2       logTopic = "COMMIT2"
+	dDecreaseIndex logTopic = "DECINDEX"
+	dBeat2         logTopic = "BEAT2"
+	dIgnore        logTopic = "IGNORE"
+	dNewTerm       logTopic = "NEWTERM"
+)
+
+var debug_2 map[logTopic]int = map[logTopic]int{dApply: 1, dWon: 1, dLogs: 1, dInit: 1,
+	dStart: 1, dCommit2: 1, dDecreaseIndex: 1, dBeat: 1, dDemote: 1, dLeader: 1}
+
+// var debug_1 map[logTopic]int = map[logTopic]int{d}
 
 // Debugging
 const Debug = false
 
 var debugVerbosity int
+var debugStart time.Time
 
-func getVerbosity() int {
+func setVerbosity() int {
 	v := os.Getenv("VERBOSE")
 	level := 0
 	if v != "" {
@@ -22,11 +57,26 @@ func getVerbosity() int {
 		}
 	}
 	debugVerbosity = level
+	debugStart = time.Now()
+	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
 	return level
 }
-func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if debugVerbosity >= 1 {
+
+func resetVerbosity() int {
+	debugVerbosity = 0
+	return 0
+}
+
+func DPrintf(dTopic logTopic, format string, a ...interface{}) (n int, err error) {
+	time := time.Since(debugStart).Microseconds()
+	prefix := fmt.Sprintf("%06d %-7v ", time, string(dTopic))
+	format = prefix + format
+	if debugVerbosity == 1 {
 		log.Printf(format, a...)
+	} else if debugVerbosity == 2 {
+		if _, ok := debug_2[dTopic]; ok {
+			log.Printf(format, a...)
+		}
 	}
 	return
 }
