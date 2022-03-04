@@ -33,6 +33,8 @@ const (
 	dBeat2         logTopic = "BEAT2"
 	dIgnore        logTopic = "IGNORE"
 	dNewTerm       logTopic = "NEWTERM"
+	dRead          logTopic = "READ"
+	dPersist       logTopic = "PERSIST"
 )
 
 var debug_2 map[logTopic]int = map[logTopic]int{dApply: 1, dWon: 1, dLogs: 1, dInit: 1,
@@ -75,6 +77,10 @@ func DPrintf(dTopic logTopic, format string, a ...interface{}) (n int, err error
 		log.Printf(format, a...)
 	} else if debugVerbosity == 2 {
 		if _, ok := debug_2[dTopic]; ok {
+			log.Printf(format, a...)
+		}
+	} else if debugVerbosity == 3 {
+		if dTopic == dPersist || dTopic == dRead {
 			log.Printf(format, a...)
 		}
 	}

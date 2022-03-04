@@ -19,12 +19,14 @@ package raft
 
 import (
 	//	"bytes"
+	"bytes"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	//	"6.824/labgob"
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
@@ -58,6 +60,37 @@ type ApplyMsg struct {
 	Snapshot      []byte
 	SnapshotTerm  int
 	SnapshotIndex int
+}
+
+type AppendEntriesArgs struct {
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []Log
+	LeaderCommit int
+}
+
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
+type Log struct {
+	Term    int
+	Command interface{}
+}
+
+type RequestVoteArgs struct {
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
+}
+
+type RequestVoteReply struct {
+	Term        int
+	VoteGranted bool
 }
 
 //
@@ -106,6 +139,17 @@ func (rf *Raft) GetState() (int, bool) {
 // see paper's Figure 2 for a description of what should be persistent.
 //
 func (rf *Raft) persist() {
+	DPrintf(dPersist, "[S%d] persist()", rf.me)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.term)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.logs)
+	data := w.Bytes()
+	// DPrintf(dPersist, "[S%d] (before=%v)", rf.me, rf.persister.raftstate)
+	rf.persister.SaveRaftState(data) // Needs to be in here?
+	// DPrintf(dPersist, "[S%d] (after data=%v)", rf.me, rf.persister.raftstate)
+
 	// Your code here (2C).
 	// Example:
 	// w := new(bytes.Buffer)
@@ -120,8 +164,28 @@ func (rf *Raft) persist() {
 // restore previously persisted state.
 //
 func (rf *Raft) readPersist(data []byte) {
+	DPrintf(dRead, "[S%d] rebooting", rf.me)
 	if data == nil || len(data) < 1 { // bootstrap without any state?
+		DPrintf(dRead, "[S%d] no backup", rf.me)
 		return
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var term int
+	var votedFor int
+	var logs []Log
+	if d.Decode(&term) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&logs) != nil {
+		DPrintf(dRead, "[S%d] error decoding", rf.me)
+		// Error?
+	} else {
+		rf.mu.Lock()
+		rf.term = term
+		rf.votedFor = votedFor
+		rf.logs = logs
+		DPrintf(dRead, "[S%d] restored (term=%d) (votedFor=%d) (logs=%v)", rf.me, term, votedFor, logs)
+		rf.mu.Unlock()
 	}
 	// Your code here (2C).
 	// Example:
@@ -156,37 +220,6 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 
-}
-
-type AppendEntriesArgs struct {
-	Term         int
-	LeaderId     int
-	PrevLogIndex int
-	PrevLogTerm  int
-	Entries      []Log
-	LeaderCommit int
-}
-
-type AppendEntriesReply struct {
-	Term    int
-	Success bool
-}
-
-type Log struct {
-	Term    int
-	Command interface{}
-}
-
-type RequestVoteArgs struct {
-	Term         int
-	CandidateId  int
-	LastLogIndex int
-	LastLogTerm  int
-}
-
-type RequestVoteReply struct {
-	Term        int
-	VoteGranted bool
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -229,6 +262,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = rf.term // Same term. Make sure candidate doesn't call on itself
 		reply.VoteGranted = false
 	}
+	rf.persist()
 	rf.mu.Unlock()
 }
 
@@ -306,6 +340,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			DPrintf(dAppend, "[S%d] had right (index=%d) but different (term=%d) vs (entry_term=%d)", rf.me, args.PrevLogIndex, rf.logs[len(rf.logs)-1].Term, args.PrevLogTerm)
 		}
 	}
+	rf.persist()
 	rf.mu.Unlock()
 }
 
@@ -374,6 +409,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.logs = append(rf.logs, newLog)
 		rf.nextIndex[rf.me] = len(rf.logs)
 		DPrintf(dStart, "[S%d] (cmd=%v) (isLeader=%t) (index=%d)", rf.me, command, isLeader, index)
+		rf.persist()
+		// PERSIST?
 	}
 	// Go routine here to send stuff out?
 	rf.mu.Unlock()
@@ -402,6 +439,10 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+//
+// the leader must determine which logs have been commited. only logs that have been appended
+// during the leader's term can be commited. previous logs cannot but the Log Matching property
+// guarantees that such logs may be committed.
 func (rf *Raft) forwardCommits(electionTerm int) {
 	for rf.killed() == false {
 		time.Sleep(100 * time.Millisecond)
@@ -451,6 +492,8 @@ func (rf *Raft) forwardCommits(electionTerm int) {
 	}
 }
 
+// the leader continuously attempts to send logs to its followers. updates the nextIndex and matchIndex for
+// each follower except its own
 func (rf *Raft) sendAppendEntriesToAll(electionTerm int) {
 	for id := 0; id < len(rf.peers); id++ {
 		if id != rf.me {
@@ -495,6 +538,7 @@ func (rf *Raft) sendAppendEntriesToAll(electionTerm int) {
 							DPrintf(dDemote, "[S%d] in listenAppendEntries from [S%d]. (newTerm = %d)", rf.me, peer_id, reply.Term)
 							rf.term = reply.Term
 							rf.job = Follower
+							rf.persist()
 						}
 						rf.mu.Unlock()
 					} else {
@@ -549,6 +593,7 @@ func (rf *Raft) heartBeat(electionTerm int) {
 						DPrintf(dDemote, "[S%d] in heartBeat() by [S%d]. (old term=%d)->(newTerm = %d)", rf.me, peer_id, electionTerm, reply.Term)
 						rf.term = reply.Term
 						rf.job = Follower
+						rf.persist()
 					}
 					rf.mu.Unlock()
 				}(id)
@@ -591,6 +636,7 @@ func (rf *Raft) startElection(electionTerm int) {
 					DPrintf(dDemote, "[S%d] in startElection polling", candidateId)
 					rf.term = reply.Term
 					rf.job = Follower
+					rf.persist()
 				}
 				if reply.VoteGranted {
 					voteCount += 1
@@ -715,6 +761,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 
 	// initialize from state persisted before a crash
+	DPrintf(dRead, "[S%d] raft data: %v", rf.me, persister.raftstate)
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
