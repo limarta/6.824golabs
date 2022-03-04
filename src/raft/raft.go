@@ -72,8 +72,10 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term          int
+	Success       bool
+	ConflictIndex int
+	ConflictTerm  int
 }
 
 type Log struct {
@@ -275,11 +277,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf(dIgnore, "[S%d] AppendEntry from [S%d]", rf.me, args.LeaderId)
 		reply.Success = false
 		reply.Term = rf.term // For old leader to update itself
+		reply.ConflictIndex = -1
+		reply.ConflictTerm = -1
 		rf.mu.Unlock()
 		return
 	}
 
-	if rf.term < args.Term { // Server is outdated. Note: What about rf.term == args.term?
+	if rf.term < args.Term || (rf.job == Candidate && rf.term == args.Term) { // Server is outdated. Note: What about rf.term == args.term?
 		if rf.job == Leader {
 			DPrintf(dDemote, "[S%d] in AppendEntries() from Leader", rf.me)
 		} else if rf.job == Candidate {
@@ -288,12 +292,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf(dNewTerm, "[S%d] in AppendEntries() (old term=%d) (new term=%d)", rf.me, rf.term, args.Term)
 		rf.term = args.Term
 		rf.job = Follower
-	} else if rf.job == Candidate && rf.term == args.Term {
-		DPrintf(dDemote, "[S%d] in AppendEntries() from Candidate", rf.me)
-		rf.term = args.Term
-		rf.job = Follower
 	}
-
 	rf.shouldReset = true // Is this correct?
 	reply.Term = rf.term
 
@@ -303,16 +302,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if len(rf.logs)-1 < args.PrevLogIndex { // Missing logs
 		DPrintf(dAppend, "[S%d] missing logs (follower logs=%v) (prevLogIndex=%d)", rf.me, rf.logs, args.PrevLogIndex)
 		reply.Success = false
-		reply.Term = rf.term
+		reply.ConflictIndex = len(rf.logs)
+		reply.ConflictTerm = -1
 	} else if len(rf.logs)-1 > args.PrevLogIndex { // Cut out extraneous logs
 		DPrintf(dAppend, "[S%d] cut logs (follower logs=%v) (prevLogIndex=%d) (prevLogTerm=%d) (entries=%v)", rf.me, rf.logs, args.PrevLogIndex, args.PrevLogTerm, args.Entries)
 		if rf.logs[args.PrevLogIndex].Term == args.PrevLogTerm {
-			rf.logs = rf.logs[0 : args.PrevLogIndex+1] // Remove last entry to save time?
+			rf.logs = rf.logs[0 : args.PrevLogIndex+1] // Follower has correct previous log. Should enter next 'if' block
 		} else {
-			rf.logs = rf.logs[0:args.PrevLogIndex] // Remove last entry to save time?
+			rf.logs = rf.logs[0:args.PrevLogIndex]
+			reply.Success = false
+			reply.ConflictTerm = len(rf.logs)
+			reply.ConflictIndex = -1
 		}
-		reply.Success = false
-		reply.Term = rf.term
 	}
 	if len(rf.logs)-1 == args.PrevLogIndex {
 		if rf.logs[len(rf.logs)-1].Term == args.PrevLogTerm { // Append logs also includes empty ones
@@ -323,7 +324,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 			rf.logs = append(rf.logs, args.Entries...)
 			reply.Success = true
-			reply.Term = rf.term
 			if rf.commitIndex < args.LeaderCommit {
 				newCommitIndex := min(args.LeaderCommit, len(rf.logs)-1)
 				DPrintf(dAppend, "[S%d] updated (old commitIndex=%d) (new commitIndex=%d)", rf.me, rf.commitIndex, newCommitIndex)
@@ -336,7 +336,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.commitIndex = newCommitIndex
 			}
 
-		} else { // Right spot but wrong term
+		} else { // Right index but wrong term
+			reply.ConflictTerm = rf.logs[args.PrevLogIndex].Term
+			i := len(rf.logs) - 1
+			for i >= 0 {
+				if rf.logs[i].Term == reply.ConflictTerm {
+					i--
+				} else {
+					break
+				}
+			}
+			reply.ConflictIndex = i
 			DPrintf(dAppend, "[S%d] had right (index=%d) but different (term=%d) vs (entry_term=%d)", rf.me, args.PrevLogIndex, rf.logs[len(rf.logs)-1].Term, args.PrevLogTerm)
 		}
 	}
@@ -509,10 +519,10 @@ func (rf *Raft) sendAppendEntriesToAll(electionTerm int) {
 					nextIndex := rf.nextIndex[peer_id]
 					logSize := len(rf.logs)
 					if logSize > nextIndex {
-						prevLogIndex := rf.nextIndex[peer_id] - 1
+						prevLogIndex := nextIndex - 1
 						prevLogTerm := rf.logs[prevLogIndex].Term
 						leaderCommit := rf.commitIndex
-						entries := rf.logs[rf.nextIndex[peer_id]:]
+						entries := rf.logs[nextIndex:]
 						args := AppendEntriesArgs{Term: rf.term, LeaderId: rf.me, PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm,
 							Entries: entries, LeaderCommit: leaderCommit}
 						reply := AppendEntriesReply{}
@@ -522,6 +532,7 @@ func (rf *Raft) sendAppendEntriesToAll(electionTerm int) {
 						rf.sendAppendEntries(peer_id, &args, &reply)
 						rf.mu.Lock()
 						// Leader may have changed between these steps?
+						// Log Optimization here
 						if rf.term == electionTerm && rf.term == reply.Term {
 							if reply.Success {
 								rf.nextIndex[peer_id] = logSize
