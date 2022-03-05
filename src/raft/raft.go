@@ -210,7 +210,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//Check if leader, follower, candidate?
 	rf.mu.Lock()
 	DPrintf(dReqVote, "[S%d] (term=%d) <- [S%d] (election term=%d)\n", rf.me, rf.term, args.CandidateId, args.Term)
-	// TODO: Must check Complete Leader condition. Incomplete right now.
 	if rf.term > args.Term { // Candidate is old. Reject.
 		DPrintf(dIgnore, "[S%d] VoteReq from [S%d]", rf.me, args.CandidateId)
 		reply.Term = rf.term
@@ -218,32 +217,31 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	} else if rf.term < args.Term {
 		DPrintf(dNewTerm, "[S%d] in RequestVote() (old term=%d) (new term=%d)", rf.me, rf.term, args.Term)
 		if rf.job == Leader {
-			DPrintf(dReqVote, "[S%d] valid VoteReq [S%d] from Leader", rf.me, args.CandidateId)
+			DPrintf(dDemote, "[S%d] in RequestVote() by [S%d] in (term=%d)", rf.me, args.CandidateId)
 		} else if rf.job == Candidate {
-			DPrintf(dReqVote, "[S%d] valid VoteReq [S%d] from Candidate", rf.me, args.CandidateId)
+			DPrintf(dDemote, "[S%d] in RequestVote() by [S%d] in (term=%d)", rf.me, args.CandidateId)
 		}
 		rf.term = args.Term
 		rf.job = Follower
 		// Election Restriction
-		if args.LastLogTerm > rf.logs[len(rf.logs)-1].Term { // Candidate is more up to date
+		if (args.LastLogTerm > rf.logs[len(rf.logs)-1].Term) ||
+			(args.LastLogTerm == rf.logs[len(rf.logs)-1].Term && args.LastLogIndex >= len(rf.logs)-1) { // Candidate is more up to date
 			rf.votedFor = args.CandidateId
 			rf.shouldReset = true
 			reply.Term = rf.term
 			reply.VoteGranted = true
-			DPrintf(dReqVote, "[S%d] ACCEPTED [S%d]. Last log higher term", rf.me, args.CandidateId)
-		} else if args.LastLogTerm == rf.logs[len(rf.logs)-1].Term && args.LastLogIndex >= len(rf.logs)-1 { // Candidate is more up to date
-			rf.votedFor = args.CandidateId
-			rf.shouldReset = true
-			reply.Term = rf.term
-			reply.VoteGranted = true
-			DPrintf(dReqVote, "[S%d] ACCEPTED [S%d]. Equal term. Higher index", rf.me, args.CandidateId)
+			if args.LastLogTerm > rf.logs[len(rf.logs)-1].Term {
+				DPrintf(dReqVote, "[S%d] ACCEPTED [S%d]. Last log higher term", rf.me, args.CandidateId)
+			} else if args.LastLogTerm == rf.logs[len(rf.logs)-1].Term && args.LastLogIndex >= len(rf.logs)-1 {
+				DPrintf(dReqVote, "[S%d] ACCEPTED [S%d]. Equal term. Higher index", rf.me, args.CandidateId)
+			}
+			rf.persist() // What happens if it votes then dies?
 		} else { // Voter is more up to date // Make sure candidate does not call itself
 			DPrintf(dReqVote, "[S%d] REJECTED [S%d]", rf.me, args.CandidateId)
 			reply.Term = rf.term
 			reply.VoteGranted = false
 		}
-		rf.persist()
-	} else {
+	} else { // rf.term == args.Term
 		reply.Term = rf.term // Same term. Make sure candidate doesn't call on itself
 		reply.VoteGranted = false
 	}
@@ -273,9 +271,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		DPrintf(dNewTerm, "[S%d] in AppendEntries() (old term=%d) (new term=%d)", rf.me, rf.term, args.Term)
 		rf.term = args.Term
-		rf.job = Follower
+		rf.job = Follower // What if changes then dies immediately?
+		// rf.persist()
 	}
-	rf.shouldReset = true // Is this correct?
+	rf.shouldReset = true
 	reply.Term = rf.term
 
 	if len(args.Entries) == 0 {
@@ -745,17 +744,16 @@ func (rf *Raft) ticker() {
 				DPrintf(dLeader, "[S%d] is leader (term=%d)\n", rf.me, rf.term)
 				rf.mu.Unlock()
 				continue
-			}
-			if rf.job == Follower { // You become a candidate, but someone else requests your vote. Must reject atht one
+			} else if rf.job == Follower { // You become a candidate, but someone else requests your vote. Must reject atht one
 				DPrintf(dTick, "[S%d] promoted to CANDIDATE (election_term=%d)\n", rf.me, rf.term+1)
 				rf.job = Candidate
 			}
-			rf.term += 1
-			timeout = rand.Intn(timeRange) + baseTime
 
-			// Vote for yourself
+			// Candidate votes for itself
+			rf.term += 1
 			rf.votedFor = rf.me
 			rf.persist()
+			timeout = rand.Intn(timeRange) + baseTime
 			go rf.startElection(rf.term)
 		}
 		rf.mu.Unlock()
