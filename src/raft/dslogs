@@ -31,7 +31,9 @@ TOPICS = {
     "DECINDX": "#222233",
     "BEAT2": "#d08341",
     "IGNORE": "#dd8d4d",
-    "NEWTERM": "#444444"
+    "NEWTERM": "#444444",
+    "READ" : "#425232",
+    "PERSIST": "#123456"
 }
 
 def list_topics(value: Optional[str]):

@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"fmt"
 	"math/rand"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -442,51 +443,54 @@ func (rf *Raft) killed() bool {
 // guarantees that such logs may be committed.
 func (rf *Raft) forwardCommits(electionTerm int) {
 	for rf.killed() == false {
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(102 * time.Millisecond)
 
 		rf.mu.Lock()
 		if rf.job != Leader || rf.term != electionTerm {
 			rf.mu.Unlock()
 			break
 		}
-		rf.matchIndex[rf.me] = len(rf.logs) - 1
+		rf.matchIndex[rf.me] = len(rf.logs) - 1 // Move to start()?
 		DPrintf(dCommit, "[S%d] (isLeader=%t) (currentCommit=%d) (matchIndex=%v)", rf.me, rf.job == Leader, rf.commitIndex, rf.matchIndex)
 		// Try to verify one more commit and send to client
 		if rf.commitIndex < len(rf.logs)-1 {
-			N := rf.commitIndex + 1
-			for ; N < len(rf.logs); N++ {
+			matchCopy := make([]int, len(rf.matchIndex))
+			copy(matchCopy, rf.matchIndex)
+			med := getMedian(matchCopy)
+			// fmt.Println("[S", rf.me, "] (median=", med, ") (matchIndex=", rf.matchIndex, ")")
+
+			N := med
+			for ; N > rf.commitIndex; N-- {
 				if rf.logs[N].Term == rf.term {
 					break
 				}
-			} // Do I have to try future N?
-			if N == len(rf.logs) { // Could not find an N
+			}
+
+			if N == rf.commitIndex { // Could not find an N
 				DPrintf(dCommit, "[S%d] could not find an N: (term=%d) (log=%v)", rf.me, rf.term, rf.logs)
 				rf.mu.Unlock()
 				continue
 			}
 			DPrintf(dCommit, "[S%d] first (N=%d) of (term=%d) (log=%v)", rf.me, N, rf.term, rf.logs)
-			tally := 0
-			for id := 0; id < len(rf.peers); id++ {
-				if rf.matchIndex[id] >= N {
-					tally += 1
-				}
+			for i := rf.commitIndex + 1; i <= N; i++ {
+				DPrintf(dCommit, "[S%d] (NEW commit=%d)", rf.me, i)
+				msg := ApplyMsg{CommandValid: true, Command: rf.logs[i].Command, CommandIndex: i}
+				DPrintf(dApply, "[S%d] (commitIndex=%d) (log=%v)", rf.me, i, rf.logs[i])
+				rf.applyCh <- msg // Send to client
 			}
-			if tally > len(rf.peers)/2 {
-				for i := rf.commitIndex + 1; i <= N; i++ {
-					DPrintf(dCommit, "[S%d] (NEW commit=%d)", rf.me, i)
-					msg := ApplyMsg{CommandValid: true, Command: rf.logs[i].Command, CommandIndex: i}
-					DPrintf(dApply, "[S%d] (commitIndex=%d) (log=%v)", rf.me, i, rf.logs[i])
-					rf.applyCh <- msg // Send to client
-				}
-				rf.commitIndex = N
-				rf.persist()
-			} else {
-				DPrintf(dCommit, "[S%d] invalid N (tally=%d/%d)", rf.me, tally, len(rf.peers))
-			}
+			rf.commitIndex = N
+			rf.persist()
 		}
-		// 	} else if rf.job == Follower {
 		rf.mu.Unlock()
+	}
+}
 
+func getMedian(arr []int) int {
+	sort.Ints(arr)
+	if len(arr)%2 == 0 {
+		return arr[len(arr)/2-1]
+	} else {
+		return arr[len(arr)/2]
 	}
 }
 
