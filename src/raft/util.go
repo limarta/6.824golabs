@@ -41,8 +41,6 @@ const (
 
 var debug_2 map[logTopic]int = map[logTopic]int{dStart: 1, dCommit: 1, dWon: 1, dDecreaseIndex: 1, dBeat: 1, dAppendListen: 1, dAppend: 1, dApply: 1}
 
-// var debug_1 map[logTopic]int = map[logTopic]int{d}
-
 // Debugging
 const Debug = false
 
