@@ -35,10 +35,11 @@ const (
 	dNewTerm       logTopic = "NEWTERM"
 	dRead          logTopic = "READ"
 	dPersist       logTopic = "PERSIST"
+	dConflict      logTopic = "CONFLICT"
+	dStale         logTopic = "STALE"
 )
 
-var debug_2 map[logTopic]int = map[logTopic]int{dApply: 1, dWon: 1, dLogs: 1, dInit: 1,
-	dStart: 1, dCommit2: 1, dDecreaseIndex: 1, dBeat: 1, dDemote: 1, dLeader: 1}
+var debug_2 map[logTopic]int = map[logTopic]int{dStart: 1, dCommit: 1, dWon: 1, dDecreaseIndex: 1, dBeat: 1, dAppendListen: 1, dAppend: 1, dApply: 1}
 
 // var debug_1 map[logTopic]int = map[logTopic]int{d}
 

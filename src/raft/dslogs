@@ -33,7 +33,8 @@ TOPICS = {
     "IGNORE": "#dd8d4d",
     "NEWTERM": "#444444",
     "READ" : "#425232",
-    "PERSIST": "#123456"
+    "PERSIST": "#123456",
+    "CONFLICT": "#522932"
 }
 
 def list_topics(value: Optional[str]):
