@@ -152,16 +152,6 @@ func (rf *Raft) persist() {
 	data := w.Bytes()
 	// DPrintf(dPersist, "[S%d] (before=%v)", rf.me, rf.persister.raftstate)
 	rf.persister.SaveRaftState(data) // Needs to be in here?
-	// DPrintf(dPersist, "[S%d] (after data=%v)", rf.me, rf.persister.raftstate)
-
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
 }
 
 //
@@ -189,23 +179,11 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.mu.Lock()
 		rf.term = term
 		rf.votedFor = votedFor
+		rf.commitIndex = commitIndex
 		rf.logs = logs
 		DPrintf(dRead, "[S%d] restored (term=%d) (votedFor=%d) (logs=%v)", rf.me, term, votedFor, logs)
 		rf.mu.Unlock()
 	}
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
 }
 
 //
@@ -326,6 +304,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			} else {
 				DPrintf(dBeat, "[S%d] agreed with beat (log=%v)", rf.me, rf.logs)
 			}
+			rf.logs = rf.logs[:args.PrevLogIndex+1]
 			rf.logs = append(rf.logs, args.Entries...)
 			reply.Success = true
 			if rf.commitIndex < args.LeaderCommit {
@@ -343,17 +322,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		} else { // Right index but wrong term
 			reply.ConflictTerm = rf.logs[args.PrevLogIndex].Term
 			// fmt.Println("Correct index but wrong term")
-			found := false
-			for i := 0; i < len(rf.logs); i++ {
+			// choice := rand.Intn(2)
+			// fmt.Println("Choice", choice)
+			i := len(rf.logs) - 1
+			for i >= 0 {
 				if rf.logs[i].Term == reply.ConflictTerm {
-					reply.ConflictIndex = i
-					found = true
+					i--
+				} else {
 					break
 				}
 			}
-			if !found {
-				fmt.Println("Couldn't find a term??")
-			}
+			i++
+			reply.ConflictIndex = i
+			// fmt.Printf("[S%d] (conflictIndex=%d/%d) tail gap: %d\n", rf.me, i, len(rf.logs), len(rf.logs)-reply.ConflictIndex)
 
 			DPrintf(dAppend, "[S%d] had right (index=%d) but different (term=%d) vs (entry_term=%d)", rf.me, args.PrevLogIndex, rf.logs[len(rf.logs)-1].Term, args.PrevLogTerm)
 		}
@@ -428,7 +409,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.nextIndex[rf.me] = len(rf.logs)
 		DPrintf(dStart, "[S%d] (cmd=%v) (isLeader=%t) (index=%d)", rf.me, command, isLeader, index)
 		rf.persist()
-		// PERSIST?
 	}
 	// Go routine here to send stuff out?
 	rf.mu.Unlock()
@@ -463,7 +443,7 @@ func (rf *Raft) killed() bool {
 // guarantees that such logs may be committed.
 func (rf *Raft) forwardCommits(electionTerm int) {
 	for rf.killed() == false {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(30 * time.Millisecond)
 
 		rf.mu.Lock()
 		if rf.job != Leader || rf.term != electionTerm {
@@ -780,6 +760,8 @@ func (rf *Raft) ticker() {
 		}
 		rf.mu.Unlock()
 	}
+
+	close(rf.applyCh)
 }
 
 //
