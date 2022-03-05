@@ -83,6 +83,10 @@ func DPrintf(dTopic logTopic, format string, a ...interface{}) (n int, err error
 		if dTopic == dPersist || dTopic == dRead {
 			log.Printf(format, a...)
 		}
+	} else if debugVerbosity == 4 {
+		if dTopic == dApply {
+			log.Printf(format, a...)
+		}
 	}
 	return
 }

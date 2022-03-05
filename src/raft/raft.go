@@ -147,6 +147,7 @@ func (rf *Raft) persist() {
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.term)
 	e.Encode(rf.votedFor)
+	e.Encode(rf.commitIndex)
 	e.Encode(rf.logs)
 	data := w.Bytes()
 	// DPrintf(dPersist, "[S%d] (before=%v)", rf.me, rf.persister.raftstate)
@@ -176,9 +177,11 @@ func (rf *Raft) readPersist(data []byte) {
 	d := labgob.NewDecoder(r)
 	var term int
 	var votedFor int
+	var commitIndex int
 	var logs []Log
 	if d.Decode(&term) != nil ||
 		d.Decode(&votedFor) != nil ||
+		d.Decode(&commitIndex) != nil ||
 		d.Decode(&logs) != nil {
 		DPrintf(dRead, "[S%d] error decoding", rf.me)
 		// Error?
@@ -261,11 +264,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.Term = rf.term
 			reply.VoteGranted = false
 		}
+		rf.persist()
 	} else {
 		reply.Term = rf.term // Same term. Make sure candidate doesn't call on itself
 		reply.VoteGranted = false
 	}
-	rf.persist()
 	rf.mu.Unlock()
 }
 
@@ -339,16 +342,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		} else { // Right index but wrong term
 			reply.ConflictTerm = rf.logs[args.PrevLogIndex].Term
-			i := len(rf.logs) - 1
-
-			for i >= 0 {
+			// fmt.Println("Correct index but wrong term")
+			found := false
+			for i := 0; i < len(rf.logs); i++ {
 				if rf.logs[i].Term == reply.ConflictTerm {
-					i--
-				} else {
+					reply.ConflictIndex = i
+					found = true
 					break
 				}
 			}
-			reply.ConflictIndex = i
+			if !found {
+				fmt.Println("Couldn't find a term??")
+			}
+
 			DPrintf(dAppend, "[S%d] had right (index=%d) but different (term=%d) vs (entry_term=%d)", rf.me, args.PrevLogIndex, rf.logs[len(rf.logs)-1].Term, args.PrevLogTerm)
 		}
 	}
@@ -494,6 +500,7 @@ func (rf *Raft) forwardCommits(electionTerm int) {
 					rf.applyCh <- msg // Send to client
 				}
 				rf.commitIndex = N
+				rf.persist()
 			} else {
 				DPrintf(dCommit, "[S%d] invalid N (tally=%d/%d)", rf.me, tally, len(rf.peers))
 			}
@@ -646,7 +653,7 @@ func (rf *Raft) heartBeat(electionTerm int) {
 
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(130 * time.Millisecond)
 	}
 }
 
@@ -722,7 +729,7 @@ func (rf *Raft) startElection(electionTerm int) {
 		} else { // Undetermined election
 			// TODO: Make sure that timer expires to break out of here
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(2 * time.Millisecond)
 		rf.mu.Unlock()
 	}
 	rf.mu.Unlock()
@@ -803,6 +810,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	nil_log := Log{Term: 0}
 	rf.logs = append(rf.logs, nil_log)
 	rf.applyCh = applyCh
+	rf.votedFor = -1
+	// rf.persist()
 	DPrintf(dInit, "[S%d]", rf.me)
 
 	// Your initialization code here (2A, 2B, 2C).
