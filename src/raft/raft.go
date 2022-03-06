@@ -111,6 +111,7 @@ type Raft struct {
 	matchIndex      []int // Initialized to 0
 	commitIndex     int
 	shouldReset     bool
+	lastApplied     int
 	logs            []Log
 	votedFor        int
 	applyCh         chan ApplyMsg
@@ -263,81 +264,67 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	if rf.term < args.Term || (rf.job == Candidate && rf.term == args.Term) { // Server is outdated. Note: What about rf.term == args.term?
-		if rf.job == Leader {
-			DPrintf(dDemote, "[S%d] in AppendEntries() from Leader", rf.me)
-		} else if rf.job == Candidate {
-			DPrintf(dDemote, "[S%d] in AppendEntries() from Candidate", rf.me)
-		}
-		DPrintf(dNewTerm, "[S%d] in AppendEntries() (old term=%d) (new term=%d)", rf.me, rf.term, args.Term)
-		rf.term = args.Term
-		rf.job = Follower // What if changes then dies immediately?
-	}
 	rf.shouldReset = true
 	reply.Term = rf.term
-	if len(args.Entries) == 0 {
-		// Assert that only heartbeats go here
-		// Heart beats go here
-		DPrintf(dBeat, "[S%d] <- [S%d] (follower commitIndex=%d) (leader commitIndex=%d) (prevLogIndex=%d) (prevLogTerm=%d)",
-			rf.me, args.LeaderId, rf.commitIndex, args.LeaderCommit, args.PrevLogIndex, args.PrevLogTerm)
-		reply.Success = true
-	} else {
-		if len(rf.logs)-1 < args.PrevLogIndex { // Missing logs
-			DPrintf(dAppend, "[S%d] (isBeat=%t) missing logs (follower logs=%v) (log len=%d) (prevLogIndex=%d) (prevLogTerm=%d)", rf.me, len(args.Entries) == 0, rf.logs, len(rf.logs), args.PrevLogIndex, args.PrevLogTerm)
-			reply.Success = false
-			reply.ConflictIndex = len(rf.logs)
-			reply.ConflictTerm = -1
-			DPrintf(dAppend, "[S%d] missing logs (conflictIndex=%d)", rf.me, reply.ConflictIndex)
-			// return
-		} else {
-			if rf.logs[args.PrevLogIndex].Term == args.PrevLogTerm { // Prev log doesn't conflict.
-				DPrintf(dAppend, "[S%d] AGREED (prevLogIndex=%d) (prevLogTerm=%d) (len log=%d) (len entries=%d)",
-					rf.me, args.PrevLogIndex, args.PrevLogTerm, len(rf.logs), len(args.Entries))
-				// See if we can append or if entry logs are substring of follower's logs
-				i := 0
-				for ; i < len(args.Entries) && args.PrevLogIndex+i+1 < len(rf.logs); i++ {
-					if rf.logs[i+args.PrevLogIndex+1] != args.Entries[i] {
-						break
-					}
-				}
-				DPrintf(dAppend, "[S%d] (log=%v) (entry=%v)", rf.me, rf.logs, args.Entries)
-
-				if i < len(args.Entries) { // All entries match follower's log
-					DPrintf(dAppend, "[S%d] didn't match at (i=%d)", rf.me, i)
-					rf.logs = rf.logs[:args.PrevLogIndex+i+1]
-					rf.logs = append(rf.logs, args.Entries[i:]...)
-					DPrintf(dAppend, "[S%d] (new log=%v)", rf.me, rf.logs)
-				} else {
-					DPrintf(dAppend, "[S%d] all entries match follower's log", rf.me)
-				}
-				reply.Success = true
-				// reply.ConflictTerm = -1
-				// reply.ConflictTerm = -1
-
-			} else { // Right index wrong term. Prev log conflicts. Must cut tail off.
-				DPrintf(dAppend, "[S%d] right index (index=%d) WRONG (log prevTerm=%d) (entry prevTerm=%d)",
-					rf.me, args.PrevLogIndex, rf.logs[args.PrevLogIndex].Term, args.PrevLogTerm)
-				rf.logs = rf.logs[:args.PrevLogIndex+1] // Kill everything except the mismatched prev log
-				// i := len(rf.logs) - 1
-				// for i >= 0 {
-				// 	if rf.logs[i].Term == reply.ConflictTerm {
-				// 		i--
-				// 	} else {
-				// 		break
-				// 	}
-				// }
-				// i++
-				// reply.ConflictIndex = i
-				// // fmt.Printf("[S%d] (conflictIndex=%d/%d) tail gap: %d\n", rf.me, i, len(rf.logs), len(rf.logs)-reply.ConflictIndex)
-
-				reply.Success = false
-				reply.ConflictIndex = len(rf.logs)
-				// reply.ConflictTerm = rf.logs[args.PrevLogIndex].Term
+	if len(rf.logs)-1 < args.PrevLogIndex { // Log too short
+		DPrintf(dAppend, "[S%d] (isBeat=%t) missing logs (follower logs=%v) (log len=%d) (prevLogIndex=%d) (prevLogTerm=%d)",
+			rf.me, len(args.Entries) == 0, rf.logs, len(rf.logs), args.PrevLogIndex, args.PrevLogTerm)
+		reply.Success = false
+		reply.ConflictIndex = len(rf.logs)
+		reply.ConflictTerm = -1
+		rf.persist()
+		rf.mu.Unlock()
+		return
+	} else if rf.logs[args.PrevLogIndex].Term != args.Term { // Has index; wrong term
+		DPrintf(dAppend, "[S%d] (isBeat=%t) right (prevLogIndex=%d) wrong (log prevLogTerm=%d) (entry prevLogTerm=%d)",
+			rf.me, len(args.Entries) == 0, args.PrevLogIndex, rf.logs[args.PrevLogIndex].Term, args.PrevLogTerm)
+		reply.Success = false
+		reply.ConflictTerm = rf.logs[args.PrevLogIndex].Term
+		i := len(rf.logs) - 1
+		for i >= 0 {
+			if rf.logs[i].Term == reply.ConflictTerm {
+				i--
+			} else {
+				break
 			}
 		}
+		i++
+		reply.ConflictIndex = i
+		rf.persist()
+		rf.mu.Unlock()
+		return
 	}
-	newCommitIndex := min(args.LeaderCommit, rf.commitIndex)
-	DPrintf(dAppend, "[S%d] updated (old commitIndex=%d) (new commitIndex=%d)", rf.me, rf.commitIndex, newCommitIndex)
+
+	reply.Success = true
+	if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
+		panic("FAILED term assumption")
+	}
+	DPrintf(dAppend, "[S%d] AGREED (leader prevLogIndex=%d) (follower prevLogterm=%d) (leader prevLogTerm=%d) (len log=%d) (len entries=%d)",
+		rf.me, args.PrevLogIndex, rf.logs[args.PrevLogTerm].Term, args.PrevLogTerm, len(rf.logs), len(args.Entries))
+	i := 0
+	for ; i < len(args.Entries) && args.PrevLogIndex+i+1 < len(rf.logs); i++ {
+		if rf.logs[i+args.PrevLogIndex+1] != args.Entries[i] {
+			break
+		}
+	}
+	DPrintf(dAppend, "[S%d] (log=%v) (entry=%v)", rf.me, rf.logs, args.Entries)
+
+	if i < len(args.Entries) { // All entries match follower's log
+		DPrintf(dAppend, "[S%d] didn't match at (i=%d)", rf.me, i)
+		rf.logs = rf.logs[:args.PrevLogIndex+i+1]
+		rf.logs = append(rf.logs, args.Entries[i:]...)
+		DPrintf(dAppend, "[S%d] (new log=%v)", rf.me, rf.logs)
+	} else {
+		DPrintf(dAppend, "[S%d] all entries match follower's log", rf.me)
+	}
+
+	reply.Success = true
+	DPrintf(dAppend, "[S%d] <- [S%d] (commitIndex=%d) (leader commitIndex=%d)", rf.me, args.LeaderId, rf.commitIndex, args.LeaderCommit)
+	newCommitIndex := rf.commitIndex
+	if args.LeaderCommit > rf.commitIndex {
+		newCommitIndex = min(args.LeaderCommit, args.PrevLogIndex+len(args.Entries))
+		DPrintf(dAppend, "[S%d] updated (old commitIndex=%d) (new commitIndex=%d)", rf.me, rf.commitIndex, newCommitIndex)
+	}
 	for i := rf.commitIndex + 1; i <= newCommitIndex; i++ {
 		msg := ApplyMsg{CommandValid: true, Command: rf.logs[i].Command, CommandIndex: i}
 		DPrintf(dApply, "[S%d] commitIndex=%d (log=%v)", rf.me, i, rf.logs[i])
@@ -345,7 +332,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	rf.commitIndex = newCommitIndex
 
-	// }
 	rf.persist()
 	rf.mu.Unlock()
 }
@@ -777,6 +763,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
 	rf.commitIndex = 0
+	rf.lastApplied = 0
 	rf.shouldReset = false
 	rf.logs = make([]Log, 0)
 	nil_log := Log{Term: 0}
