@@ -255,6 +255,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.shouldReset = true
 	reply.Term = rf.term
+	DPrintf(dAppend, "[S%d] (log=%v) (entry=%v)", rf.me, rf.logs, args.Entries)
 	if len(rf.logs)-1 < args.PrevLogIndex { // Log too short
 		DPrintf(dAppend, "[S%d] (isBeat=%t) missing logs (follower logs=%v) (log len=%d) (prevLogIndex=%d) (prevLogTerm=%d)",
 			rf.me, len(args.Entries) == 0, rf.logs, len(rf.logs), args.PrevLogIndex, args.PrevLogTerm)
@@ -263,7 +264,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.ConflictTerm = -1
 		// rf.persist()
 		return
-	} else if rf.logs[args.PrevLogIndex].Term != args.Term { // Has index; wrong term
+	} else if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm { // Has index; wrong term
 		DPrintf(dAppend, "[S%d] (isBeat=%t) right (prevLogIndex=%d) wrong (log prevLogTerm=%d) (entry prevLogTerm=%d)",
 			rf.me, len(args.Entries) == 0, args.PrevLogIndex, rf.logs[args.PrevLogIndex].Term, args.PrevLogTerm)
 		reply.Success = false
@@ -294,12 +295,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			break
 		}
 	}
-	DPrintf(dAppend, "[S%d] (log=%v) (entry=%v)", rf.me, rf.logs, args.Entries)
 
 	if i < len(args.Entries) { // All entries match follower's log
 		DPrintf(dAppend, "[S%d] didn't match at (i=%d)", rf.me, i)
-		rf.logs = rf.logs[:args.PrevLogIndex+i+1]
-		rf.logs = append(rf.logs, args.Entries[i:]...)
+		rf.logs = rf.logs[:args.PrevLogIndex+1]
+		rf.logs = append(rf.logs, args.Entries...)
 		DPrintf(dAppend, "[S%d] (new log=%v)", rf.me, rf.logs)
 	} else {
 		DPrintf(dAppend, "[S%d] all entries match follower's log", rf.me)
@@ -518,11 +518,11 @@ func (rf *Raft) sendAppendEntryToPeer(peer_id int, electionTerm int, beat bool) 
 	if beat {
 		args.Entries = make([]Log, 0)
 		DPrintf(dBeat, "[S%d] -> [S%d] (term=%d) (prevLogIndex=%d) (prevLogTerm=%d) (leaderCommit=%d) (entries=%v)",
-			rf.me, peer_id, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.Entries)
+			rf.me, peer_id, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.Entries)
 	} else if len(rf.logs)-1 >= nextIndex {
 		args.Entries = rf.logs[nextIndex:]
 		DPrintf(dAppendListen, "[S%d] -> [S%d] (term=%d) (prevLogIndex=%d) (prevLogTerm=%d) (leaderCommit=%d) (entries=%v)",
-			rf.me, peer_id, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.Entries)
+			rf.me, peer_id, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.Entries)
 	} else {
 		DPrintf(dAppendListen, "[S%d] nothing to send to [S%d] (len logs=%d) (nextIndex=%d)", rf.me, peer_id, len(rf.logs), nextIndex)
 		return
