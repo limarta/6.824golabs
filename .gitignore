@@ -7,3 +7,10 @@ src/main/spawn8.sh
 src/main/spawnCrash.sh
 src/main/spawnEarlyExit.sh
 src/main/spawnjobCount.sh
+src/raft/2A.txt
+src/raft/2B.txt
+src/raft/rich.txt
+src/raft/venv
+src/raft/dump
+.vscode
+output.txt
