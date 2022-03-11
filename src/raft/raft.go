@@ -283,15 +283,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.me, len(args.Entries) == 0, args.PrevLogIndex, rf.logs[args.PrevLogIndex].Term, args.PrevLogTerm)
 		reply.Success = false
 		reply.ConflictTerm = rf.logs[args.PrevLogIndex].Term
-		i := len(rf.logs) - 1
-		for i >= 0 {
+		i := 0
+		for i <= args.PrevLogIndex {
 			if rf.logs[i].Term == reply.ConflictTerm {
-				i--
-			} else {
 				break
 			}
+			i++
 		}
-		i++
 		reply.ConflictIndex = i
 		// rf.persist()
 		return
@@ -442,7 +440,7 @@ func (rf *Raft) killed() bool {
 // guarantees that such logs may be committed.
 func (rf *Raft) forwardCommits(electionTerm int) {
 	for rf.killed() == false {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		rf.mu.Lock()
 		if rf.job != Leader || rf.term != electionTerm {
@@ -580,22 +578,27 @@ func (rf *Raft) sendAppendEntryToPeer(peer_id int, electionTerm int, beat bool) 
 					rf.nextIndex[peer_id] = max(1, min(reply.ConflictIndex, rf.nextIndex[peer_id]))
 					DPrintf(dConflict, "[S%d] -> [S%d] (reply.ConflictIndex=%d) (saved nextIndex=%d) (new nextIndex=%v) (matchIndex=%v)",
 						rf.me, peer_id, reply.ConflictIndex, nextIndex, rf.nextIndex, rf.matchIndex)
-					// } else {
-					// 	found := false
-					// 	for i := len(rf.logs) - 1; i >= 0; i-- {
-					// 		if rf.logs[i].Term == reply.ConflictTerm {
-					// 			rf.nextIndex[peer_id] = i + 1
-					// 			found = true
-					// 			break
-					// 		}
-					// 	}
-					// 	if !found {
-					// 		rf.nextIndex[peer_id] = reply.ConflictIndex
-					// 	}
 				} else {
-					rf.nextIndex[peer_id] = max(1, min(nextIndex-1, rf.nextIndex[peer_id]))
-					DPrintf(dDecreaseIndex, "[S%d] -> [S%d] (saved nextIndex=%d) (new nextIndex=%v) (matchIndex=%v)",
-						rf.me, peer_id, nextIndex, rf.nextIndex, rf.matchIndex)
+					found := false
+					i := len(rf.logs) - 1
+					for ; i >= 0; i-- {
+						if rf.logs[i].Term == reply.ConflictTerm {
+							found = true
+							break
+						}
+					}
+					if i > args.PrevLogIndex {
+						panic("i>args.PrevLogIndex")
+					}
+					if found {
+						DPrintf(dConflict, "[S%d] -> [S%d] found (conflictTerm=%d) (i=%d)", rf.me, peer_id, reply.ConflictTerm, i)
+						rf.nextIndex[peer_id] = max(1, min(i, rf.nextIndex[peer_id]))
+					} else {
+						DPrintf(dConflict, "[S%d] -> [S%d] NOT found (conflictTerm=%d)", rf.me, peer_id, reply.ConflictTerm)
+						rf.nextIndex[peer_id] = max(1, min(reply.ConflictIndex, rf.nextIndex[peer_id]))
+					}
+					DPrintf(dConflict, "[S%d] -> [S%d] (reply.ConflictIndex=%d) (reply.ConflictTerm=%d) (saved nextIndex=%d) (new nextIndex=%v) (matchIndex=%v)",
+						rf.me, peer_id, reply.ConflictIndex, reply.ConflictTerm, nextIndex, rf.nextIndex, rf.matchIndex)
 				}
 			} else if rf.matchIndex[peer_id] > matchIndex {
 				if beat {
