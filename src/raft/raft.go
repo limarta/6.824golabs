@@ -231,7 +231,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.Term = rf.term
 			reply.VoteGranted = false
 		}
-		// rf.persist() // What happens if it votes then dies?
+		rf.persist() // What happens if it votes then dies?
 	} else { // rf.term == args.Term
 		reply.Term = rf.term // Same term. Make sure candidate doesn't call on itself
 		reply.VoteGranted = false
@@ -252,19 +252,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.ConflictTerm = -1
 		return
 	}
-	if rf.term < args.Term { // Server is outdated. Note: What about rf.term == args.term?
-		if rf.job == Leader {
-			DPrintf(dDemote, "[S%d] in AppendEntries() from Leader", rf.me)
-		} else if rf.job == Candidate {
-			DPrintf(dDemote, "[S%d] in AppendEntries() from Candidate", rf.me)
-		}
-		DPrintf(dNewTerm, "[S%d] in AppendEntries() (old term=%d) (new term=%d)", rf.me, rf.term, args.Term)
+	if rf.term < args.Term || (rf.job == Candidate && rf.term == args.Term) { // Server is outdated. Note: What about rf.term == args.term?
+		DPrintf(dDemote, "[S%d] in AppendEntries()", rf.me)
 		rf.term = args.Term
 		rf.job = Follower
-	} else if rf.job == Candidate && rf.term == args.Term {
-		DPrintf(dDemote, "[S%d] in AppendEntries() from Candidate", rf.me)
-		rf.term = args.Term
-		rf.job = Follower
+		rf.persist()
 	}
 
 	rf.shouldReset = true
@@ -276,7 +268,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.ConflictTerm = -1
 		DPrintf(dAppend, "[S%d] (isBeat=%t) missing logs (follower logs=%v) (log len=%d) (prevLogIndex=%d) (prevLogTerm=%d) (conflictIndex=%d) (conflictTerm=%d)",
 			rf.me, len(args.Entries) == 0, rf.logs, len(rf.logs), args.PrevLogIndex, args.PrevLogTerm, reply.ConflictIndex, reply.ConflictTerm)
-		// rf.persist()
 		return
 	} else if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm { // Has index; wrong term
 		DPrintf(dAppend, "[S%d] (isBeat=%t) right (prevLogIndex=%d) wrong (log prevLogTerm=%d) (entry prevLogTerm=%d)",
@@ -291,7 +282,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			i++
 		}
 		reply.ConflictIndex = i
-		// rf.persist()
 		return
 	}
 
@@ -312,6 +302,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf(dAppend, "[S%d] didn't match at (i=%d)", rf.me, i)
 		rf.logs = rf.logs[:args.PrevLogIndex+1]
 		rf.logs = append(rf.logs, args.Entries...)
+		rf.persist()
 		DPrintf(dAppend, "[S%d] (new log=%v)", rf.me, rf.logs)
 	} else {
 		DPrintf(dAppend, "[S%d] all entries match follower's log", rf.me)
@@ -330,8 +321,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.applyCh <- msg // Send to client
 	}
 	rf.commitIndex = newCommitIndex
-
-	// rf.persist()
+	rf.persist()
 }
 
 func min(x int, y int) int {
@@ -407,7 +397,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.logs = append(rf.logs, newLog)
 		rf.nextIndex[rf.me] = len(rf.logs)
 		DPrintf(dStart, "[S%d] (cmd=%v) (isLeader=%t) (index=%d)", rf.me, command, isLeader, index)
-		// rf.persist()
+		rf.persist()
 	}
 
 	return index, term, isLeader
@@ -472,9 +462,8 @@ func (rf *Raft) forwardCommits(electionTerm int) {
 					rf.applyCh <- msg // Send to client
 				}
 				rf.commitIndex = N
-
+				rf.persist()
 			}
-			// rf.persist()
 		}
 		rf.mu.Unlock()
 	}
@@ -619,7 +608,7 @@ func (rf *Raft) sendAppendEntryToPeer(peer_id int, electionTerm int, beat bool) 
 		DPrintf(dDemote, "[S%d] -> [S%d] (beat=%t) (oldTerm = %d) (newTerm = %d)", rf.me, peer_id, beat, rf.term, reply.Term)
 		rf.term = reply.Term
 		rf.job = Follower
-		// rf.persist()
+		rf.persist()
 	}
 }
 
@@ -674,7 +663,7 @@ func (rf *Raft) startElection(electionTerm int) {
 					DPrintf(dDemote, "[S%d] in startElection polling", rf.me)
 					rf.term = reply.Term
 					rf.job = Follower
-					// rf.persist()
+					rf.persist()
 				}
 				if reply.VoteGranted {
 					voteCount += 1
@@ -698,6 +687,7 @@ func (rf *Raft) startElection(electionTerm int) {
 			DPrintf(dWon, "[S%d] won election for term %d with %d/%d votes \n", rf.me, electionTerm, curVoteCount, cluster_size)
 			wonElection = true
 			rf.job = Leader
+			rf.persist()
 			for i := range rf.nextIndex {
 				rf.nextIndex[i] = len(rf.logs)
 				rf.lastIndexChange[i] = time.Time{}
@@ -753,7 +743,7 @@ func (rf *Raft) ticker() {
 			// Candidate votes for itself
 			rf.term += 1
 			rf.votedFor = rf.me
-			// rf.persist()
+			rf.persist()
 			timeout = rand.Intn(timeRange) + baseTime
 			go rf.startElection(rf.term)
 		}
@@ -793,7 +783,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 	rf.votedFor = -1
 	rf.lastIndexChange = make([]time.Time, len(peers))
-	// rf.persist()
 	DPrintf(dInit, "[S%d]", rf.me)
 
 	// Your initialization code here (2A, 2B, 2C).
