@@ -271,11 +271,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.term
 	DPrintf(dAppend, "[S%d] (log=%v) (entry=%v)", rf.me, rf.logs, args.Entries)
 	if len(rf.logs)-1 < args.PrevLogIndex { // Log too short
-		DPrintf(dAppend, "[S%d] (isBeat=%t) missing logs (follower logs=%v) (log len=%d) (prevLogIndex=%d) (prevLogTerm=%d)",
-			rf.me, len(args.Entries) == 0, rf.logs, len(rf.logs), args.PrevLogIndex, args.PrevLogTerm)
 		reply.Success = false
 		reply.ConflictIndex = len(rf.logs)
 		reply.ConflictTerm = -1
+		DPrintf(dAppend, "[S%d] (isBeat=%t) missing logs (follower logs=%v) (log len=%d) (prevLogIndex=%d) (prevLogTerm=%d) (conflictIndex=%d) (conflictTerm=%d)",
+			rf.me, len(args.Entries) == 0, rf.logs, len(rf.logs), args.PrevLogIndex, args.PrevLogTerm, reply.ConflictIndex, reply.ConflictTerm)
 		// rf.persist()
 		return
 	} else if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm { // Has index; wrong term
@@ -576,8 +576,24 @@ func (rf *Raft) sendAppendEntryToPeer(peer_id int, electionTerm int, beat bool) 
 			if rf.matchIndex[peer_id] == matchIndex {
 				DPrintf(dDecreaseIndex, "[S%d] -> [S%d] (saved nextIndex=%d) (nextIndex=%v) (matchIndex=%v)",
 					rf.me, peer_id, nextIndex, rf.nextIndex, rf.matchIndex)
-				if nextIndex > 1 {
-					rf.nextIndex[peer_id] = min(nextIndex-1, rf.nextIndex[peer_id])
+				if reply.ConflictTerm == -1 {
+					rf.nextIndex[peer_id] = max(1, min(reply.ConflictIndex, rf.nextIndex[peer_id]))
+					DPrintf(dConflict, "[S%d] -> [S%d] (reply.ConflictIndex=%d) (saved nextIndex=%d) (new nextIndex=%v) (matchIndex=%v)",
+						rf.me, peer_id, reply.ConflictIndex, nextIndex, rf.nextIndex, rf.matchIndex)
+					// } else {
+					// 	found := false
+					// 	for i := len(rf.logs) - 1; i >= 0; i-- {
+					// 		if rf.logs[i].Term == reply.ConflictTerm {
+					// 			rf.nextIndex[peer_id] = i + 1
+					// 			found = true
+					// 			break
+					// 		}
+					// 	}
+					// 	if !found {
+					// 		rf.nextIndex[peer_id] = reply.ConflictIndex
+					// 	}
+				} else {
+					rf.nextIndex[peer_id] = max(1, min(nextIndex-1, rf.nextIndex[peer_id]))
 					DPrintf(dDecreaseIndex, "[S%d] -> [S%d] (saved nextIndex=%d) (new nextIndex=%v) (matchIndex=%v)",
 						rf.me, peer_id, nextIndex, rf.nextIndex, rf.matchIndex)
 				}
@@ -595,22 +611,6 @@ func (rf *Raft) sendAppendEntryToPeer(peer_id int, electionTerm int, beat bool) 
 					rf.me, peer_id, rf.matchIndex[peer_id], matchIndex)
 				panic(err)
 			}
-			// if reply.ConflictTerm == -1 {
-			// 	DPrintf(dConflict, "[S%d] -> [S%d] (conflictIndex=%d)", rf.me, peer_id, reply.ConflictIndex)
-			// 	rf.nextIndex[peer_id] = reply.ConflictIndex // Check with matchIndex?
-			// } else {
-			// 	found := false
-			// 	for i := len(rf.logs) - 1; i >= 0; i-- {
-			// 		if rf.logs[i].Term == reply.ConflictTerm {
-			// 			rf.nextIndex[peer_id] = i + 1
-			// 			found = true
-			// 			break
-			// 		}
-			// 	}
-			// 	if !found {
-			// 		rf.nextIndex[peer_id] = reply.ConflictIndex
-			// 	}
-			// }
 		}
 	} else if reply.Term > rf.term { // Follower follows new leader
 		DPrintf(dDemote, "[S%d] -> [S%d] (beat=%t) (oldTerm = %d) (newTerm = %d)", rf.me, peer_id, beat, rf.term, reply.Term)
