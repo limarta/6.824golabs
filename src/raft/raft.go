@@ -430,7 +430,7 @@ func (rf *Raft) killed() bool {
 // guarantees that such logs may be committed.
 func (rf *Raft) forwardCommits(electionTerm int) {
 	for rf.killed() == false {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(2 * time.Millisecond)
 
 		rf.mu.Lock()
 		if rf.job != Leader || rf.term != electionTerm {
