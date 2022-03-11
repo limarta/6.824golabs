@@ -315,11 +315,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		newCommitIndex = min(args.LeaderCommit, args.PrevLogIndex+len(args.Entries))
 		DPrintf(dAppend, "[S%d] updated (old commitIndex=%d) (new commitIndex=%d)", rf.me, rf.commitIndex, newCommitIndex)
 	}
-	for i := rf.commitIndex + 1; i <= newCommitIndex; i++ {
-		msg := ApplyMsg{CommandValid: true, Command: rf.logs[i].Command, CommandIndex: i}
-		DPrintf(dApply, "[S%d] commitIndex=%d (log=%v)", rf.me, i, rf.logs[i])
-		rf.applyCh <- msg // Send to client
-	}
+	// for i := rf.commitIndex + 1; i <= newCommitIndex; i++ {
+	// 	msg := ApplyMsg{CommandValid: true, Command: rf.logs[i].Command, CommandIndex: i}
+	// 	DPrintf(dApply, "[S%d] commitIndex=%d (log=%v)", rf.me, i, rf.logs[i])
+	// 	rf.applyCh <- msg // Send to client
+	// }
 	rf.commitIndex = newCommitIndex
 	rf.persist()
 }
@@ -424,6 +424,21 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) applicator() {
+	for !rf.killed() {
+		time.Sleep(2 * time.Millisecond)
+		rf.mu.Lock()
+		for rf.lastApplied < rf.commitIndex {
+			rf.lastApplied += 1
+			msg := ApplyMsg{CommandValid: true, Command: rf.logs[rf.lastApplied].Command, CommandIndex: rf.lastApplied}
+			DPrintf(dApply, "[S%d] (commitIndex=%d) (log=%v)", rf.me, rf.lastApplied, rf.logs[rf.lastApplied])
+			rf.applyCh <- msg // Send to client
+		}
+		rf.mu.Unlock()
+	}
+	close(rf.applyCh)
+}
+
 //
 // the leader must determine which logs have been commited. only logs that have been appended
 // during the leader's term can be commited. previous logs cannot but the Log Matching property
@@ -456,11 +471,11 @@ func (rf *Raft) forwardCommits(electionTerm int) {
 				DPrintf(dCommit, "[S%d] no new N (term=%d) (log=%d)", rf.me, rf.term, rf.logs)
 			} else {
 				DPrintf(dCommit, "[S%d] FOUND (N=%d) (term=%d) (log=%v)", rf.me, N, rf.term, rf.logs)
-				for i := rf.commitIndex + 1; i <= N; i++ {
-					msg := ApplyMsg{CommandValid: true, Command: rf.logs[i].Command, CommandIndex: i}
-					DPrintf(dApply, "[S%d] (commitIndex=%d) (log=%v)", rf.me, i, rf.logs[i])
-					rf.applyCh <- msg // Send to client
-				}
+				// for i := rf.commitIndex + 1; i <= N; i++ {
+				// 	msg := ApplyMsg{CommandValid: true, Command: rf.logs[i].Command, CommandIndex: i}
+				// 	DPrintf(dApply, "[S%d] (commitIndex=%d) (log=%v)", rf.me, i, rf.logs[i])
+				// 	rf.applyCh <- msg // Send to client
+				// }
 				rf.commitIndex = N
 				rf.persist()
 			}
@@ -750,7 +765,6 @@ func (rf *Raft) ticker() {
 		rf.mu.Unlock()
 	}
 
-	close(rf.applyCh)
 }
 
 //
@@ -793,6 +807,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
+	go rf.applicator()
 
 	return rf
 }
