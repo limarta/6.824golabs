@@ -948,7 +948,6 @@ func TestFigure8Unreliable2C(t *testing.T) {
 			cfg.connect(i)
 		}
 	}
-	fmt.Println("Over here")
 	cfg.one(rand.Int()%10000, servers, true)
 
 	cfg.end()

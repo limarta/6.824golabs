@@ -39,7 +39,7 @@ const (
 	dStale         logTopic = "STALE"
 )
 
-var debug_2 map[logTopic]int = map[logTopic]int{dStart: 1, dCommit: 1, dWon: 1, dDecreaseIndex: 1, dBeat: 1, dAppendListen: 1, dAppend: 1, dApply: 1}
+var debug_2 map[logTopic]int = map[logTopic]int{dStart: 1, dWon: 1, dPersist: 1, dApply: 1, dConflict: 1}
 
 // Debugging
 const Debug = false
