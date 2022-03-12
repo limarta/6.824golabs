@@ -1,5 +1,5 @@
 #!/bin/bash
-while (go test -run TestFailAgree2B -race)
+while (go test -run 2C)
 do
 	echo "unk"
 done
