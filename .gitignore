@@ -9,6 +9,7 @@ src/main/spawnEarlyExit.sh
 src/main/spawnjobCount.sh
 src/raft/2A.txt
 src/raft/2B.txt
+src/raft/2C.txt
 src/raft/rich.txt
 src/raft/venv
 src/raft/dump
