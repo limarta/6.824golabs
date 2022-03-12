@@ -97,6 +97,12 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
+type InstallSnapshotArgs struct {
+}
+
+type InstallSnapshotReply struct {
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -109,7 +115,7 @@ type Raft struct {
 	job             Job
 	term            int
 	nextIndex       []int
-	matchIndex      []int // Initialized to 0
+	matchIndex      []int
 	commitIndex     int
 	shouldReset     bool
 	lastApplied     int
@@ -117,7 +123,6 @@ type Raft struct {
 	votedFor        int
 	applyCh         chan ApplyMsg
 	lastIndexChange []time.Time
-
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -190,9 +195,6 @@ func (rf *Raft) readPersist(data []byte) {
 // have more recent info since it communicate the snapshot on applyCh.
 //
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
-
-	// Your code here (2D).
-
 	return true
 }
 
@@ -366,6 +368,11 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
+
+func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapsho", args, reply)
 	return ok
 }
 
