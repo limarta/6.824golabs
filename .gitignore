@@ -13,6 +13,7 @@ src/raft/2C.txt
 src/raft/rich.txt
 src/raft/venv
 src/raft/dump
+src/raft/*.txt
 .vscode
 dump
 output.txt
