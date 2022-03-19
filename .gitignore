@@ -14,4 +14,5 @@ src/raft/rich.txt
 src/raft/venv
 src/raft/dump
 .vscode
+dump
 output.txt
