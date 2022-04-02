@@ -110,7 +110,7 @@ func (kv *KVServer) Request(cmd Op) Err {
 				return ErrWrongLeader
 			}
 			kv.mu.Unlock()
-			time.Sleep(1)
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
 	return ErrWrongLeader
@@ -158,10 +158,6 @@ func (kv *KVServer) applier() {
 			} else {
 				DPrintf(dApply, "S[%d] (C=%d) (op=%s) (K=%s) (V=%s) (index=%d) (term=%d)",
 					kv.me, op.Id, op.Operation, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm)
-			}
-
-			if _, ok := kv.duplicate[op.Id]; !ok {
-				kv.duplicate[op.Id] = 0
 			}
 
 			if op.ReqId > kv.duplicate[op.Id] {
