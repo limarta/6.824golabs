@@ -56,6 +56,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	CommandTerm  int
 
 	// For 2D:
 	SnapshotValid bool
@@ -557,7 +558,10 @@ func (rf *Raft) applicator() {
 		lastIncludedIndex := rf.lastIncludedIndex
 		if rf.lastApplied+1 > lastIncludedIndex {
 			log := rf.atIndex(rf.lastApplied + 1)
-			msg := ApplyMsg{CommandValid: true, Command: rf.atIndex(rf.lastApplied + 1).Command, CommandIndex: rf.lastApplied + 1}
+			msg := ApplyMsg{CommandValid: true,
+				Command:      rf.atIndex(rf.lastApplied + 1).Command,
+				CommandIndex: rf.lastApplied + 1,
+				CommandTerm:  rf.atIndex(rf.lastApplied + 1).Term}
 			rf.mu.Unlock()
 			DPrintf(dApply, "[S%d] (commitIndex=%d) (log=%v)", rf.me, rf.lastApplied+1, log)
 			rf.applyCh <- msg // Send to client

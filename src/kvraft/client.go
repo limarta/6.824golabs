@@ -10,6 +10,8 @@ import (
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	leader  int
+	id      int64
+	reqId   int
 	// You will have to modify this struct.
 }
 
@@ -24,6 +26,8 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	ck.leader = 0
+	ck.id = nrand()
+	ck.reqId = 0
 	// You'll have to add code here.
 	return ck
 }
@@ -42,7 +46,10 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 //
 func (ck *Clerk) Get(key string) string {
 	// Find the server that is the leader?
-	args := GetArgs{Key: key}
+	ck.reqId += 1
+	args := GetArgs{Key: key,
+		Id:    ck.id,
+		ReqId: ck.reqId}
 	reply := GetReply{}
 	ok := ck.servers[ck.leader].Call("KVServer.Get", &args, &reply)
 	if ok && reply.Err == OK {
@@ -77,12 +84,12 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
-	args := PutAppendArgs{Key: key, Value: value}
-	if op == "Put" {
-		args.Op = "Put"
-	} else {
-		args.Op = "Append"
-	}
+	ck.reqId += 1
+	args := PutAppendArgs{Key: key,
+		Value: value,
+		Id:    ck.id,
+		ReqId: ck.reqId,
+		Op:    op}
 	reply := PutAppendReply{}
 	ok := ck.servers[ck.leader].Call("KVServer.PutAppend", &args, &reply)
 	if ok && reply.Err == OK {

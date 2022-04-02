@@ -1,7 +1,6 @@
 package kvraft
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -58,6 +57,8 @@ type Op struct {
 	Key       string
 	Value     string
 	Operation string
+	Id        int64
+	ReqId     int
 }
 
 type KVServer struct {
@@ -67,101 +68,115 @@ type KVServer struct {
 	applyCh      chan raft.ApplyMsg
 	dead         int32 // set by Kill()
 	maxraftstate int   // snapshot if log grows this big
-	log          []Op
 	data         map[string]string
+	duplicate    map[int64]int
+}
 
-	// Your definitions here.
+func (kv *KVServer) Request(cmd Op) Err {
+	kv.mu.Lock()
+	if _, ok := kv.duplicate[cmd.Id]; !ok {
+		kv.duplicate[cmd.Id] = 0
+	}
+	if kv.duplicate[cmd.Id] >= cmd.ReqId {
+		kv.mu.Unlock()
+		return OK
+	}
+	kv.mu.Unlock()
+
+	index, term, isLeader := kv.rf.Start(cmd)
+
+	if isLeader {
+		if cmd.Operation == "Get" {
+			DPrintf(dGet, "S[%d] (C=%d) (reqId=%d) (key=%s) (index=%d) (term=%d) (isLeader=%t)",
+				kv.me, cmd.Id, cmd.ReqId, cmd.Key, index, term, isLeader)
+		} else if cmd.Operation == "Put" {
+			DPrintf(dPut, "S[%d] (C=%d) (reqId=%d) (key=%s) (value=%s) (index=%d) (term=%d) (isLeader=%t)",
+				kv.me, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term, isLeader)
+		} else if cmd.Operation == "Append" {
+			DPrintf(dAppend, "S[%d] (C=%d) (reqId=%d) (key=%s) (value=%s) (index=%d) (term=%d) (isLeader=%t)",
+				kv.me, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term, isLeader)
+		}
+
+		for {
+			kv.mu.Lock()
+			cur_term, _ := kv.rf.GetState()
+			if cmd.ReqId <= kv.duplicate[cmd.Id] {
+				DPrintf(dAppend, "S[%d] (C=%d) (reqId=%d) (key=%s) (value=%s) (index=%d) (term=%d) (isLeader=%t)",
+					kv.me, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term, isLeader)
+				kv.mu.Unlock()
+				return OK
+			} else if cur_term > term {
+				kv.mu.Unlock()
+				return ErrWrongLeader
+			}
+			kv.mu.Unlock()
+			time.Sleep(1)
+		}
+	}
+	return ErrWrongLeader
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	cmd := Op{Key: args.Key, Operation: "Get"}
-	index, term, isLeader := kv.rf.Start(cmd)
-	DPrintf(dGet, "S[%d] (key=%s) (index=%d) (term=%d) (isLeader=%t)", kv.me, args.Key, index, term, isLeader)
-	if isLeader {
-		fmt.Println("Good Get")
-		for {
-			kv.mu.Lock()
-			if index <= len(kv.log)-1 { // a log exists at index AND it's the expected log on the expected term
-				if kv.log[index] == cmd { // condition to detect expected log/term
-					if val, ok := kv.data[args.Key]; ok {
-						DPrintf(dGet, "S[%d] retrieved (key=%s) (value=%s)", kv.me, args.Key, val)
-						reply.Err = OK
-						reply.Value = val
-						//do something here
-					} else {
-						DPrintf(dGet, "S[%d] no key (key=%s)", kv.me, args.Key)
-						reply.Err = ErrNoKey
-					}
-				} else {
-					reply.Err = ErrWrongLeader
-				}
-				kv.mu.Unlock()
-				return
-			}
-			kv.mu.Unlock()
-		}
-	} else {
-		reply.Err = ErrWrongLeader
-		fmt.Println("Bad Get")
+	cmd := Op{
+		Key:       args.Key,
+		Id:        args.Id,
+		ReqId:     args.ReqId,
+		Operation: "Get"}
+	err := kv.Request(cmd)
+	reply.Err = err
+	if err == OK {
+		kv.mu.Lock()
+		// if val, ok := kv.data[args.Key]; ok {
+		// 	reply.Value = val
+		// } else {
+		// 	reply.Value = ""
+		// }
+		reply.Value = kv.data[args.Key]
+		kv.mu.Unlock()
 	}
-	// Need to know if leader? Start()
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	cmd := Op{Key: args.Key, Value: args.Value, Operation: args.Op}
-	index, term, isLeader := kv.rf.Start(cmd)
-	if isLeader {
-		DPrintf(dPutAppend, "S[%d] is leader (op=%v) (key=%s) (value=\"%s\")", kv.me, args.Op, args.Key, args.Value)
-		for {
-			kv.mu.Lock()
-			if index <= len(kv.log)-1 {
-				if kv.log[index] == cmd {
-					if args.Op == "Put" {
-						DPrintf(dPut, "S[%d] (index=%d) (term=%d) (isLeader=%t)", kv.me, index, term, isLeader)
-						reply.Err = OK
-						kv.data[args.Key] = args.Value
-						DPrintf(dPut, "S[%d] (new map=%v)", kv.me, kv.data)
-					} else {
-						DPrintf(dAppend, "S[%d] (index=%d) (term=%d) (isLeader=%t)", kv.me, index, term, isLeader)
-						if val, ok := kv.data[args.Key]; ok {
-							kv.data[args.Key] = val + args.Value
-						} else {
-							kv.data[args.Key] = args.Value
-						}
-						DPrintf(dAppend, "S[%d] (new map=%v)", kv.me, kv.data)
-						reply.Err = OK
-					}
-				} else {
-					reply.Err = ErrWrongLeader
-				}
-				kv.mu.Unlock()
-				return
-			}
-			kv.mu.Unlock()
-			// time.Sleep(1000)
-			time.Sleep(1)
-		}
-	} else {
-		fmt.Println("Bad PutAppend")
-		reply.Err = ErrWrongLeader
-	}
+	cmd := Op{
+		Key:       args.Key,
+		Value:     args.Value,
+		Id:        args.Id,
+		ReqId:     args.ReqId,
+		Operation: args.Op}
+	err := kv.Request(cmd)
+	reply.Err = err
 }
 
-func (kv *KVServer) readApplies() {
+func (kv *KVServer) applier() {
 	for {
 		msg := <-kv.applyCh
-		if r, ok := msg.Command.(Op); ok {
+		if op, ok := msg.Command.(Op); ok {
 			kv.mu.Lock()
-			kv.log = append(kv.log, r)
-			if r.Operation == "Get" {
-				DPrintf(dApply, "S[%d] (op=%s) (K=%s) (index=%d) (new log=%v)", kv.me, r.Operation, r.Key, msg.CommandIndex, kv.log)
-
-			} else if r.Operation == "Put" {
-				DPrintf(dApply, "S[%d] (op=%s) (K=%s) (V=%s) (index=%d) (new log=%v)", kv.me, r.Operation, r.Key, r.Value, msg.CommandIndex, kv.log)
-
-			} else if r.Operation == "Append" {
-				DPrintf(dApply, "S[%d] (op=%s) (K=%s) (V=%s) (index=%d) (new log=%v)", kv.me, r.Operation, r.Key, r.Value, msg.CommandIndex, kv.log)
+			if op.Operation == "Get" {
+				DPrintf(dApply, "S[%d] (C=%d) (op=%s) (K=%s) (index=%d) (term=%d)",
+					kv.me, op.Id, op.Operation, op.Key, msg.CommandIndex, msg.CommandTerm)
+			} else {
+				DPrintf(dApply, "S[%d] (C=%d) (op=%s) (K=%s) (V=%s) (index=%d) (term=%d)",
+					kv.me, op.Id, op.Operation, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm)
 			}
+
+			if _, ok := kv.duplicate[op.Id]; !ok {
+				kv.duplicate[op.Id] = 0
+			}
+
+			if op.ReqId > kv.duplicate[op.Id] {
+				if op.Operation == "Put" {
+					kv.data[op.Key] = op.Value
+				} else if op.Operation == "Append" {
+					if val, ok := kv.data[op.Key]; ok {
+						kv.data[op.Key] = val + op.Value
+					} else {
+						kv.data[op.Key] = op.Value
+					}
+				}
+				kv.duplicate[op.Id] = op.ReqId
+			}
+			// fmt.Println(kv.data)
 			kv.mu.Unlock()
 		}
 	}
@@ -215,12 +230,11 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	kv.log = make([]Op, 0)
-	kv.log = append(kv.log, Op{})
 	kv.data = make(map[string]string)
+	kv.duplicate = make(map[int64]int)
 
 	// You may need initialization code here.
-	go kv.readApplies()
+	go kv.applier()
 
 	return kv
 }
