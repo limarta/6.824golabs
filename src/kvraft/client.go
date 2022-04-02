@@ -2,7 +2,6 @@ package kvraft
 
 import (
 	"crypto/rand"
-	"fmt"
 	"math/big"
 
 	"6.824/labrpc"
@@ -46,8 +45,7 @@ func (ck *Clerk) Get(key string) string {
 	args := GetArgs{Key: key}
 	reply := GetReply{}
 	ok := ck.servers[ck.leader].Call("KVServer.Get", &args, &reply)
-	if ok {
-		fmt.Printf("Get (key=%s) (value=%s)\n", key, reply.Value)
+	if ok && reply.Err == OK {
 		return reply.Value
 	}
 
@@ -55,9 +53,8 @@ func (ck *Clerk) Get(key string) string {
 	for {
 		reply := GetReply{}
 		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
-		if ok {
+		if ok && reply.Err == OK {
 			ck.leader = i % len(ck.servers)
-			fmt.Printf("Get (key=%s) (value=%s)\n", key, reply.Value)
 			return reply.Value
 		}
 		i = (i + 1) % len(ck.servers)
@@ -85,7 +82,6 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	reply := PutAppendReply{}
 	ok := ck.servers[ck.leader].Call("KVServer.PutAppend", &args, &reply)
 	if ok && reply.Err == OK {
-		fmt.Printf("%s (key=%s) (value=%s)\n", op, key, value)
 		return
 	}
 
@@ -95,7 +91,6 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
 		if ok && reply.Err == OK {
 			ck.leader = i
-			fmt.Printf("%s (key=%s) (value=%s)\n", op, key, value)
 			return
 		}
 		i = (i + 1) % len(ck.servers)

@@ -2,6 +2,8 @@ package kvraft
 
 import (
 	"log"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,6 +14,25 @@ import (
 )
 
 type logTopic string
+
+var debugVerbosity int
+var debugStart time.Time
+
+func setVerbosity() int {
+	v := os.Getenv("VERBOSE")
+	level := 0
+	if v != "" {
+		var err error
+		level, err = strconv.Atoi(v)
+		if err != nil {
+			log.Fatalf("Invalid verbosity %v", v)
+		}
+	}
+	debugVerbosity = level
+	debugStart = time.Now()
+	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
+	return level
+}
 
 const (
 	dAppend    logTopic = "APPEND"
@@ -25,8 +46,10 @@ const Debug = false
 func DPrintf(dTopic logTopic, format string, a ...interface{}) (n int, err error) {
 	// time := time.Since(debugStart).Microseconds()
 	// prefix := fmt.Sprintf("%06d %-7v ", time, string(dTopic))
-	format = string(dTopic) + " " + format
-	log.Printf(format, a...)
+	if debugVerbosity == 1 {
+		format = string(dTopic) + " " + format
+		log.Printf(format, a...)
+	}
 	return
 }
 
@@ -52,7 +75,7 @@ type KVServer struct {
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	cmd := Op{Key: args.Key, Operation: "Get"}
 	index, term, isLeader := kv.rf.Start(cmd)
-	DPrintf(dGet, "S[%d] (key=%s) (index=%d) (term=%d)", kv.me, args.Key, index, term)
+	DPrintf(dGet, "S[%d] (key=%s) (index=%d) (term=%d) (isLeader=%t)", kv.me, args.Key, index, term, isLeader)
 	if isLeader {
 		for {
 			kv.mu.Lock()
