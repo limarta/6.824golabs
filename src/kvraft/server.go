@@ -1,49 +1,135 @@
 package kvraft
 
 import (
-	"6.824/labgob"
-	"6.824/labrpc"
-	"6.824/raft"
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"6.824/labgob"
+	"6.824/labrpc"
+	"6.824/raft"
 )
 
+type logTopic string
+
+const (
+	dAppend    logTopic = "APPEND"
+	dPut       logTopic = "PUT"
+	dGet       logTopic = "GET"
+	dApply     logTopic = "APPLY"
+	dPutAppend logTopic = "PUTAPPEND"
+)
 const Debug = false
 
-func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug {
-		log.Printf(format, a...)
-	}
+func DPrintf(dTopic logTopic, format string, a ...interface{}) (n int, err error) {
+	// time := time.Since(debugStart).Microseconds()
+	// prefix := fmt.Sprintf("%06d %-7v ", time, string(dTopic))
+	format = string(dTopic) + " " + format
+	log.Printf(format, a...)
 	return
 }
 
-
 type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	Key       string
+	Value     string
+	Operation string
 }
 
 type KVServer struct {
-	mu      sync.Mutex
-	me      int
-	rf      *raft.Raft
-	applyCh chan raft.ApplyMsg
-	dead    int32 // set by Kill()
-
-	maxraftstate int // snapshot if log grows this big
+	mu           sync.Mutex
+	me           int
+	rf           *raft.Raft
+	applyCh      chan raft.ApplyMsg
+	dead         int32 // set by Kill()
+	maxraftstate int   // snapshot if log grows this big
+	log          []Op
+	data         map[string]string
 
 	// Your definitions here.
 }
 
-
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	cmd := Op{Key: args.Key, Operation: "Get"}
+	index, term, isLeader := kv.rf.Start(cmd)
+	DPrintf(dGet, "S[%d] (key=%s) (index=%d) (term=%d)", kv.me, args.Key, index, term)
+	if isLeader {
+		for {
+			kv.mu.Lock()
+			if index >= len(kv.log)-1 {
+				if val, ok := kv.data[args.Key]; ok {
+					DPrintf(dGet, "S[%d] retrieved (key=%s) (value=%s)", kv.me, args.Key, val)
+					reply.Err = OK
+					reply.Value = val
+					//do something here
+				} else {
+					DPrintf(dGet, "S[%d] no key (key=%s)", kv.me, args.Key)
+					reply.Err = ErrNoKey
+				}
+				kv.mu.Unlock()
+				return
+			}
+			kv.mu.Unlock()
+		}
+	} else {
+		reply.Err = ErrWrongLeader
+	}
+	// Need to know if leader? Start()
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	cmd := Op{Key: args.Key, Value: args.Value, Operation: args.Op}
+	index, term, isLeader := kv.rf.Start(cmd)
+	if isLeader {
+		DPrintf(dPutAppend, "S[%d] is leader (op=%v) (key=%s) (value=\"%s\")", kv.me, args.Op, args.Key, args.Value)
+		for {
+			kv.mu.Lock()
+			if index <= len(kv.log)-1 {
+				if args.Op == "Put" {
+					DPrintf(dPut, "S[%d] (index=%d) (term=%d) (isLeader=%t)", kv.me, index, term, isLeader)
+					reply.Err = OK
+					kv.data[args.Key] = args.Value
+					DPrintf(dPut, "S[%d] (new map=%v)", kv.me, kv.data)
+				} else {
+					DPrintf(dAppend, "S[%d] (index=%d) (term=%d) (isLeader=%t)", kv.me, index, term, isLeader)
+					if val, ok := kv.data[args.Key]; ok {
+						kv.data[args.Key] = val + args.Value
+					} else {
+						kv.data[args.Key] = args.Value
+					}
+					DPrintf(dAppend, "S[%d] (new map=%v)", kv.me, kv.data)
+					reply.Err = OK
+				}
+				kv.mu.Unlock()
+				return
+			}
+			kv.mu.Unlock()
+			// time.Sleep(1000)
+			time.Sleep(3)
+		}
+	} else {
+		reply.Err = ErrWrongLeader
+	}
+}
+
+func (kv *KVServer) readApplies() {
+	for {
+		msg := <-kv.applyCh
+		if r, ok := msg.Command.(Op); ok {
+			kv.mu.Lock()
+			kv.log = append(kv.log, r)
+			if r.Operation == "Get" {
+				DPrintf(dApply, "S[%d] (op=%s) (K=%s) (index=%d) (new log=%v)", kv.me, r.Operation, r.Key, msg.CommandIndex, kv.log)
+
+			} else if r.Operation == "Put" {
+				DPrintf(dApply, "S[%d] (op=%s) (K=%s) (V=%s) (index=%d) (new log=%v)", kv.me, r.Operation, r.Key, r.Value, msg.CommandIndex, kv.log)
+
+			} else if r.Operation == "Append" {
+				DPrintf(dApply, "S[%d] (op=%s) (K=%s) (V=%s) (index=%d) (new log=%v)", kv.me, r.Operation, r.Key, r.Value, msg.CommandIndex, kv.log)
+			}
+			kv.mu.Unlock()
+		}
+	}
 }
 
 //
@@ -94,8 +180,12 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.log = make([]Op, 0)
+	kv.log = append(kv.log, Op{})
+	kv.data = make(map[string]string)
 
 	// You may need initialization code here.
+	go kv.readApplies()
 
 	return kv
 }

@@ -1,12 +1,16 @@
 package kvraft
 
-import "6.824/labrpc"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"fmt"
+	"math/big"
 
+	"6.824/labrpc"
+)
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
+	leader  int
 	// You will have to modify this struct.
 }
 
@@ -20,6 +24,7 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
+	ck.leader = 0
 	// You'll have to add code here.
 	return ck
 }
@@ -37,9 +42,26 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
+	// Find the server that is the leader?
+	args := GetArgs{Key: key}
+	reply := GetReply{}
+	ok := ck.servers[ck.leader].Call("KVServer.Get", &args, &reply)
+	if ok {
+		fmt.Printf("Get (key=%s) (value=%s)\n", key, reply.Value)
+		return reply.Value
+	}
 
-	// You will have to modify this function.
-	return ""
+	i := 0
+	for {
+		reply := GetReply{}
+		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
+		if ok {
+			ck.leader = i % len(ck.servers)
+			fmt.Printf("Get (key=%s) (value=%s)\n", key, reply.Value)
+			return reply.Value
+		}
+		i = (i + 1) % len(ck.servers)
+	}
 }
 
 //
@@ -54,6 +76,30 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	args := PutAppendArgs{Key: key, Value: value}
+	if op == "Put" {
+		args.Op = "Put"
+	} else {
+		args.Op = "Append"
+	}
+	reply := PutAppendReply{}
+	ok := ck.servers[ck.leader].Call("KVServer.PutAppend", &args, &reply)
+	if ok && reply.Err == OK {
+		fmt.Printf("%s (key=%s) (value=%s)\n", op, key, value)
+		return
+	}
+
+	i := 0
+	for {
+		reply := PutAppendReply{}
+		ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
+		if ok && reply.Err == OK {
+			ck.leader = i
+			fmt.Printf("%s (key=%s) (value=%s)\n", op, key, value)
+			return
+		}
+		i = (i + 1) % len(ck.servers)
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
