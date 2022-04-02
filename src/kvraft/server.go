@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -77,17 +78,22 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	index, term, isLeader := kv.rf.Start(cmd)
 	DPrintf(dGet, "S[%d] (key=%s) (index=%d) (term=%d) (isLeader=%t)", kv.me, args.Key, index, term, isLeader)
 	if isLeader {
+		fmt.Println("Good Get")
 		for {
 			kv.mu.Lock()
-			if index >= len(kv.log)-1 {
-				if val, ok := kv.data[args.Key]; ok {
-					DPrintf(dGet, "S[%d] retrieved (key=%s) (value=%s)", kv.me, args.Key, val)
-					reply.Err = OK
-					reply.Value = val
-					//do something here
+			if index <= len(kv.log)-1 { // a log exists at index AND it's the expected log on the expected term
+				if kv.log[index] == cmd { // condition to detect expected log/term
+					if val, ok := kv.data[args.Key]; ok {
+						DPrintf(dGet, "S[%d] retrieved (key=%s) (value=%s)", kv.me, args.Key, val)
+						reply.Err = OK
+						reply.Value = val
+						//do something here
+					} else {
+						DPrintf(dGet, "S[%d] no key (key=%s)", kv.me, args.Key)
+						reply.Err = ErrNoKey
+					}
 				} else {
-					DPrintf(dGet, "S[%d] no key (key=%s)", kv.me, args.Key)
-					reply.Err = ErrNoKey
+					reply.Err = ErrWrongLeader
 				}
 				kv.mu.Unlock()
 				return
@@ -96,6 +102,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		}
 	} else {
 		reply.Err = ErrWrongLeader
+		fmt.Println("Bad Get")
 	}
 	// Need to know if leader? Start()
 }
@@ -108,29 +115,34 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		for {
 			kv.mu.Lock()
 			if index <= len(kv.log)-1 {
-				if args.Op == "Put" {
-					DPrintf(dPut, "S[%d] (index=%d) (term=%d) (isLeader=%t)", kv.me, index, term, isLeader)
-					reply.Err = OK
-					kv.data[args.Key] = args.Value
-					DPrintf(dPut, "S[%d] (new map=%v)", kv.me, kv.data)
-				} else {
-					DPrintf(dAppend, "S[%d] (index=%d) (term=%d) (isLeader=%t)", kv.me, index, term, isLeader)
-					if val, ok := kv.data[args.Key]; ok {
-						kv.data[args.Key] = val + args.Value
-					} else {
+				if kv.log[index] == cmd {
+					if args.Op == "Put" {
+						DPrintf(dPut, "S[%d] (index=%d) (term=%d) (isLeader=%t)", kv.me, index, term, isLeader)
+						reply.Err = OK
 						kv.data[args.Key] = args.Value
+						DPrintf(dPut, "S[%d] (new map=%v)", kv.me, kv.data)
+					} else {
+						DPrintf(dAppend, "S[%d] (index=%d) (term=%d) (isLeader=%t)", kv.me, index, term, isLeader)
+						if val, ok := kv.data[args.Key]; ok {
+							kv.data[args.Key] = val + args.Value
+						} else {
+							kv.data[args.Key] = args.Value
+						}
+						DPrintf(dAppend, "S[%d] (new map=%v)", kv.me, kv.data)
+						reply.Err = OK
 					}
-					DPrintf(dAppend, "S[%d] (new map=%v)", kv.me, kv.data)
-					reply.Err = OK
+				} else {
+					reply.Err = ErrWrongLeader
 				}
 				kv.mu.Unlock()
 				return
 			}
 			kv.mu.Unlock()
 			// time.Sleep(1000)
-			time.Sleep(3)
+			time.Sleep(1)
 		}
 	} else {
+		fmt.Println("Bad PutAppend")
 		reply.Err = ErrWrongLeader
 	}
 }

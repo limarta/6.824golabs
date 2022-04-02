@@ -47,6 +47,8 @@ func (ck *Clerk) Get(key string) string {
 	ok := ck.servers[ck.leader].Call("KVServer.Get", &args, &reply)
 	if ok && reply.Err == OK {
 		return reply.Value
+	} else if ok && reply.Err == ErrNoKey {
+		return ""
 	}
 
 	i := 0
@@ -54,8 +56,10 @@ func (ck *Clerk) Get(key string) string {
 		reply := GetReply{}
 		ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
 		if ok && reply.Err == OK {
-			ck.leader = i % len(ck.servers)
+			ck.leader = i
 			return reply.Value
+		} else if ok && reply.Err == ErrNoKey {
+			return ""
 		}
 		i = (i + 1) % len(ck.servers)
 	}

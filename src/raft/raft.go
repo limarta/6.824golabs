@@ -585,7 +585,7 @@ func (rf *Raft) applicator() {
 func (rf *Raft) forwardCommits(electionTerm int) {
 	for rf.killed() == false {
 		// TODO: Change back to 2 milliseconds
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(2 * time.Millisecond)
 
 		rf.mu.Lock()
 		if rf.job != Leader || rf.term != electionTerm {
@@ -651,7 +651,7 @@ func (rf *Raft) sendAppendEntriesToAll(electionTerm int) {
 				}(id)
 			}
 		}
-		time.Sleep(101 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
