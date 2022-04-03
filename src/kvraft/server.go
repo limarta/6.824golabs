@@ -97,7 +97,7 @@ func (kv *KVServer) Request(cmd Op) Err {
 				kv.me, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term, isLeader)
 		}
 
-		for {
+		for !kv.killed() {
 			kv.mu.Lock()
 			cur_term, _ := kv.rf.GetState()
 			if cmd.ReqId <= kv.duplicate[cmd.Id] {
@@ -126,11 +126,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	reply.Err = err
 	if err == OK {
 		kv.mu.Lock()
-		// if val, ok := kv.data[args.Key]; ok {
-		// 	reply.Value = val
-		// } else {
-		// 	reply.Value = ""
-		// }
 		reply.Value = kv.data[args.Key]
 		kv.mu.Unlock()
 	}
@@ -148,7 +143,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 }
 
 func (kv *KVServer) applier() {
-	for {
+	for !kv.killed() {
 		msg := <-kv.applyCh
 		if op, ok := msg.Command.(Op); ok {
 			kv.mu.Lock()

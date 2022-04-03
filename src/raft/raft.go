@@ -547,7 +547,7 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) applicator() {
 	for !rf.killed() {
-		time.Sleep(2 * time.Millisecond)
+		time.Sleep(1 * time.Millisecond)
 		rf.mu.Lock()
 		if rf.lastApplied >= rf.commitIndex {
 			rf.mu.Unlock()
@@ -589,7 +589,7 @@ func (rf *Raft) applicator() {
 func (rf *Raft) forwardCommits(electionTerm int) {
 	for rf.killed() == false {
 		// TODO: Change back to 2 milliseconds
-		time.Sleep(2 * time.Millisecond)
+		time.Sleep(1 * time.Millisecond)
 
 		rf.mu.Lock()
 		if rf.job != Leader || rf.term != electionTerm {
@@ -655,7 +655,7 @@ func (rf *Raft) sendAppendEntriesToAll(electionTerm int) {
 				}(id)
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 
@@ -815,7 +815,7 @@ func (rf *Raft) heartBeat(electionTerm int) {
 				}(id)
 			}
 		}
-		time.Sleep(101 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
