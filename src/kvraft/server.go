@@ -42,6 +42,7 @@ const (
 	dApply     logTopic = "APPLY"
 	dPutAppend logTopic = "PUTAPPEND"
 	dDecode    logTopic = "DECODE"
+	dSnap      logTopic = "SNAP"
 )
 const Debug = false
 
@@ -49,6 +50,9 @@ func DPrintf(dTopic logTopic, format string, a ...interface{}) (n int, err error
 	// time := time.Since(debugStart).Microseconds()
 	// prefix := fmt.Sprintf("%06d %-7v ", time, string(dTopic))
 	if debugVerbosity == 1 {
+		format = string(dTopic) + " " + format
+		log.Printf(format, a...)
+	} else if (debugVerbosity == 2) && dTopic == dSnap {
 		format = string(dTopic) + " " + format
 		log.Printf(format, a...)
 	}
@@ -160,9 +164,9 @@ func (kv *KVServer) applier() {
 				}
 
 				// Make sure this is monotonic?
-				if kv.index >= msg.CommandIndex {
-					panic("Why not increasing?")
-				}
+				// if kv.index >= msg.CommandIndex {
+				// 	panic("Why not increasing?")
+				// }
 				kv.index = msg.CommandIndex
 
 				if op.ReqId > kv.duplicate[op.Id] {
@@ -181,6 +185,7 @@ func (kv *KVServer) applier() {
 			// fmt.Println(kv.data)
 			kv.mu.Unlock()
 		} else if msg.SnapshotValid {
+			// DPrintf(dDecode, "[S%d] HELLO??????", kv.me)
 			// Read snapshot = data + duplicate + index
 			// Set values
 			kv.mu.Lock()
@@ -189,19 +194,15 @@ func (kv *KVServer) applier() {
 			var data map[string]string
 			var duplicate map[int64]int
 			var index int
-			if d.Decode(&data) != nil ||
-				d.Decode(&duplicate) != nil ||
-				d.Decode(&index) != nil {
+			if d.Decode(&data) != nil || d.Decode(&duplicate) != nil || d.Decode(&index) != nil {
 				DPrintf(dDecode, "[S%d] ERROR", kv.me)
 			} else {
 				kv.data = data
 				kv.duplicate = duplicate
 				kv.index = index
-				DPrintf(dDecode, "[S%d] success", kv.me)
+				DPrintf(dDecode, "[S%d] (index=%d) (data=%v) (dup=%v)", kv.me, index, data, duplicate)
 			}
 
-			// It's possible that the last index of the snapshot was never sent through the normal command struct.
-			// Have to figure this out
 			kv.mu.Unlock()
 		}
 	}
@@ -211,7 +212,9 @@ func (kv *KVServer) snapshot() {
 	if kv.maxraftstate > 0 {
 		for !kv.killed() {
 			kv.mu.Lock()
+
 			if kv.rf.RaftStateSize() >= kv.maxraftstate {
+				DPrintf(dSnap, "S[%d] (raftStateSize=%d) (max=%d)", kv.me, kv.rf.RaftStateSize(), kv.maxraftstate)
 				// Snapshot = kv.data + kv.duplicate + index
 				w := new(bytes.Buffer)
 				e := labgob.NewEncoder(w)
