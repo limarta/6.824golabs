@@ -64,6 +64,7 @@ func setVerbosity() int {
 		}
 	}
 	debugVerbosity = level
+	fmt.Println("VERBOSITY: ", level)
 	debugStart = time.Now()
 	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
 	return level
@@ -93,5 +94,13 @@ func DPrintf(dTopic logTopic, format string, a ...interface{}) (n int, err error
 			log.Printf(format, a...)
 		}
 	}
+	return
+}
+
+func FPrintf(dTopic logTopic, format string, a ...interface{}) (n int, err error) {
+	time := time.Since(debugStart).Microseconds()
+	prefix := fmt.Sprintf("%06d %-7v ", time, string(dTopic))
+	format = prefix + format
+	log.Printf(format, a...)
 	return
 }
