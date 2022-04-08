@@ -159,6 +159,10 @@ func (kv *KVServer) applier() {
 						kv.me, op.Id, op.Operation, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm)
 				}
 
+				// Make sure this is monotonic?
+				if kv.index >= msg.CommandIndex {
+					panic("Why not increasing?")
+				}
 				kv.index = msg.CommandIndex
 
 				if op.ReqId > kv.duplicate[op.Id] {
