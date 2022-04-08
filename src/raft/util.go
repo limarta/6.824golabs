@@ -41,9 +41,11 @@ const (
 	dSnapshotApplied logTopic = "SNAPAPP"
 	dInstall         logTopic = "INSTALL"
 	dSearchCommit    logTopic = "SEARCH"
+	dCut             logTopic = "CUT"
 )
 
 var debug_2 map[logTopic]int = map[logTopic]int{dStart: 1, dWon: 1, dSearchCommit: 1, dPersist: 1, dApply: 1, dConflict: 1}
+var debug_4 map[logTopic]int = map[logTopic]int{dCut: 1, dInstall: 1, dSnapshot: 1}
 
 // Debugging
 const Debug = false
@@ -87,7 +89,7 @@ func DPrintf(dTopic logTopic, format string, a ...interface{}) (n int, err error
 			log.Printf(format, a...)
 		}
 	} else if debugVerbosity == 4 {
-		if dTopic == dApply {
+		if _, ok := debug_4[dTopic]; ok {
 			log.Printf(format, a...)
 		}
 	}

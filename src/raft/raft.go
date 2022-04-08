@@ -254,11 +254,11 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		rf.persist()
 	} else if index == rf.lastIncludedIndex {
 		// Is this necessary?
-		rf.snapshot = snapshot
-		rf.persist()
-		panic("index==rf.lastIncludedIndex")
+		// rf.snapshot = snapshot
+		// rf.persist()
+		// panic("index==rf.lastIncludedIndex")
 	} else {
-		panic("index < rf.lastIncludedIndex")
+		// panic("index < rf.lastIncludedIndex")
 	}
 	rf.mu.Unlock()
 }
@@ -362,7 +362,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf(dAppend, "[S%d] missing logs (isBeat=%t) (follower logs=%v) (lastIncludedLog=%v) (prevLogIndex=%d) (prevLogTerm=%d) (conflictIndex=%d) (conflictTerm=%d)",
 			rf.me, len(args.Entries) == 0, rf.logs, rf.lastIncludedLog, args.PrevLogIndex, args.PrevLogTerm, reply.ConflictIndex, reply.ConflictTerm)
 		return
-	} else if rf.atIndex(args.PrevLogIndex).Term != args.PrevLogTerm { // Has index; wrong term
+	}
+	if args.PrevLogIndex < rf.lastIncludedIndex {
+		// DPrintf(dCut, "S[%d] (args.PrevLogIndex=%d) (rf.lastIncludedIndex=%d)",
+		// 	rf.me, args.PrevLogIndex, rf.lastIncludedIndex)
+		if min(len(args.Entries), rf.lastIncludedIndex-args.PrevLogIndex+1) == len(args.Entries) {
+			args.PrevLogTerm = rf.lastIncludedLog.Term
+		} else {
+			args.PrevLogTerm = args.Entries[rf.lastIncludedIndex].Term
+		}
+		args.Entries = args.Entries[min(len(args.Entries), rf.lastIncludedIndex-args.PrevLogIndex+1):]
+		args.PrevLogIndex = rf.lastIncludedIndex
+		// args.PrevLogTerm = rf.lastIncludedLog.Term
+	}
+	if rf.atIndex(args.PrevLogIndex).Term != args.PrevLogTerm { // Has index; wrong term
 		DPrintf(dAppend, "[S%d] (isBeat=%t) right (prevLogIndex=%d) wrong (log prevLogTerm=%d) (entry prevLogTerm=%d)",
 			rf.me, len(args.Entries) == 0, args.PrevLogIndex, rf.atIndex(args.PrevLogIndex).Term, args.PrevLogTerm)
 		reply.Success = false
@@ -594,7 +607,6 @@ func (rf *Raft) applicator() {
 // guarantees that such logs may be committed.
 func (rf *Raft) forwardCommits(electionTerm int) {
 	for rf.killed() == false {
-		// TODO: Change back to 2 milliseconds
 		time.Sleep(1 * time.Millisecond)
 
 		rf.mu.Lock()
@@ -768,9 +780,9 @@ func (rf *Raft) sendAppendEntryToPeer(peer_id int, electionTerm int, beat bool) 
 							break
 						}
 					}
-					if i > args.PrevLogIndex {
-						panic("i>args.PrevLogIndex")
-					}
+					// if i > args.PrevLogIndex {
+					// 	panic("i>args.PrevLogIndex")
+					// }
 					if found {
 						DPrintf(dConflict, "[S%d] -> [S%d] found (conflictTerm=%d) (i=%d)", rf.me, peer_id, reply.ConflictTerm, i)
 						rf.nextIndex[peer_id] = max(1, min(i, rf.nextIndex[peer_id]))
