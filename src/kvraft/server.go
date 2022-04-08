@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"os"
 	"strconv"
@@ -40,6 +41,7 @@ const (
 	dGet       logTopic = "GET"
 	dApply     logTopic = "APPLY"
 	dPutAppend logTopic = "PUTAPPEND"
+	dDecode    logTopic = "DECODE"
 )
 const Debug = false
 
@@ -70,6 +72,7 @@ type KVServer struct {
 	maxraftstate int   // snapshot if log grows this big
 	data         map[string]string
 	duplicate    map[int64]int
+	index        int
 }
 
 func (kv *KVServer) Request(cmd Op) Err {
@@ -145,30 +148,77 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *KVServer) applier() {
 	for !kv.killed() {
 		msg := <-kv.applyCh
-		if op, ok := msg.Command.(Op); ok {
-			kv.mu.Lock()
-			if op.Operation == "Get" {
-				DPrintf(dApply, "S[%d] (C=%d) (op=%s) (K=%s) (index=%d) (term=%d)",
-					kv.me, op.Id, op.Operation, op.Key, msg.CommandIndex, msg.CommandTerm)
-			} else {
-				DPrintf(dApply, "S[%d] (C=%d) (op=%s) (K=%s) (V=%s) (index=%d) (term=%d)",
-					kv.me, op.Id, op.Operation, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm)
-			}
-
-			if op.ReqId > kv.duplicate[op.Id] {
-				if op.Operation == "Put" {
-					kv.data[op.Key] = op.Value
-				} else if op.Operation == "Append" {
-					if val, ok := kv.data[op.Key]; ok {
-						kv.data[op.Key] = val + op.Value
-					} else {
-						kv.data[op.Key] = op.Value
-					}
+		if msg.CommandValid {
+			if op, ok := msg.Command.(Op); ok {
+				kv.mu.Lock()
+				if op.Operation == "Get" {
+					DPrintf(dApply, "S[%d] (C=%d) (op=%s) (K=%s) (index=%d) (term=%d)",
+						kv.me, op.Id, op.Operation, op.Key, msg.CommandIndex, msg.CommandTerm)
+				} else {
+					DPrintf(dApply, "S[%d] (C=%d) (op=%s) (K=%s) (V=%s) (index=%d) (term=%d)",
+						kv.me, op.Id, op.Operation, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm)
 				}
-				kv.duplicate[op.Id] = op.ReqId
+
+				kv.index = msg.CommandIndex
+
+				if op.ReqId > kv.duplicate[op.Id] {
+					if op.Operation == "Put" {
+						kv.data[op.Key] = op.Value
+					} else if op.Operation == "Append" {
+						if val, ok := kv.data[op.Key]; ok {
+							kv.data[op.Key] = val + op.Value
+						} else {
+							kv.data[op.Key] = op.Value
+						}
+					}
+					kv.duplicate[op.Id] = op.ReqId
+				}
 			}
 			// fmt.Println(kv.data)
 			kv.mu.Unlock()
+		} else if msg.SnapshotValid {
+			// Read snapshot = data + duplicate + index
+			// Set values
+			kv.mu.Lock()
+			r := bytes.NewBuffer(msg.Snapshot)
+			d := labgob.NewDecoder(r)
+			var data map[string]string
+			var duplicate map[int64]int
+			var index int
+			if d.Decode(&data) != nil ||
+				d.Decode(&duplicate) != nil ||
+				d.Decode(&index) != nil {
+				DPrintf(dDecode, "[S%d] ERROR", kv.me)
+			} else {
+				kv.data = data
+				kv.duplicate = duplicate
+				kv.index = index
+				DPrintf(dDecode, "[S%d] success", kv.me)
+			}
+
+			// It's possible that the last index of the snapshot was never sent through the normal command struct.
+			// Have to figure this out
+			kv.mu.Unlock()
+		}
+	}
+}
+
+func (kv *KVServer) snapshot() {
+	if kv.maxraftstate > 0 {
+		for !kv.killed() {
+			kv.mu.Lock()
+			if kv.rf.RaftStateSize() >= kv.maxraftstate {
+				// Snapshot = kv.data + kv.duplicate + index
+				w := new(bytes.Buffer)
+				e := labgob.NewEncoder(w)
+				e.Encode(kv.data)
+				e.Encode(kv.duplicate)
+				e.Encode(kv.index)
+				snapshot := w.Bytes()
+				kv.rf.Snapshot(kv.index, snapshot)
+			}
+			kv.mu.Unlock()
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
@@ -226,6 +276,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 	go kv.applier()
+	go kv.snapshot()
 
 	return kv
 }
