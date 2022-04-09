@@ -36,13 +36,16 @@ func setVerbosity() int {
 }
 
 const (
-	dAppend    logTopic = "APPEND"
-	dPut       logTopic = "PUT"
-	dGet       logTopic = "GET"
-	dApply     logTopic = "APPLY"
-	dPutAppend logTopic = "PUTAPPEND"
-	dDecode    logTopic = "DECODE"
-	dSnap      logTopic = "SNAP"
+	dAppend         logTopic = "APPEND"
+	dPut            logTopic = "PUT"
+	dGet            logTopic = "GET"
+	dApply          logTopic = "APPLY"
+	dPutAppend      logTopic = "PUTAPPEND"
+	dDecode         logTopic = "DECODE"
+	dSnap           logTopic = "SNAP"
+	dApplySnap      logTopic = "APPLYSNAP"
+	dApplyPutAppend logTopic = "APPLYPUTAPPEND"
+	dApplyGet       logTopic = "APPLYGET"
 )
 const Debug = false
 
@@ -94,17 +97,19 @@ func (kv *KVServer) Request(cmd Op) Err {
 
 	if isLeader {
 		if cmd.Operation == "Get" {
-			DPrintf(dGet, "S[%d] (C=%d) (reqId=%d) (key=%s) (index=%d) (term=%d) (isLeader=%t)",
-				kv.me, cmd.Id, cmd.ReqId, cmd.Key, index, term, isLeader)
+			DPrintf(dGet, "S[%d] (isLeader=%t) (C=%d) (reqId=%d) (key=%s) (index=%d) (term=%d)",
+				kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, index, term)
 		} else if cmd.Operation == "Put" {
-			DPrintf(dPut, "S[%d] (C=%d) (reqId=%d) (key=%s) (value=%s) (index=%d) (term=%d) (isLeader=%t)",
-				kv.me, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term, isLeader)
+			DPrintf(dPut, "S[%d]  (isLeader=%t) (C=%d) (reqId=%d) (key=%s) (value=%s) (index=%d) (term=%d)",
+				kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term)
 		} else if cmd.Operation == "Append" {
-			DPrintf(dAppend, "S[%d] (C=%d) (reqId=%d) (key=%s) (value=%s) (index=%d) (term=%d) (isLeader=%t)",
-				kv.me, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term, isLeader)
+			DPrintf(dAppend, "S[%d] (isLeader=%t) (C=%d) (reqId=%d) (key=%s) (value=%s) (index=%d) (term=%d)",
+				kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term)
 		}
 
-		for !kv.killed() {
+		start := time.Now()
+
+		for !kv.killed() && time.Now().Sub(start).Seconds() < float64(2) {
 			kv.mu.Lock()
 			cur_term, _ := kv.rf.GetState()
 			if cmd.ReqId <= kv.duplicate[cmd.Id] {
@@ -134,6 +139,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	if err == OK {
 		kv.mu.Lock()
 		reply.Value = kv.data[args.Key]
+		_, isLeader := kv.rf.GetState()
+		if !isLeader {
+			reply.Err = ErrWrongLeader
+		}
+		DPrintf(dGet, "[S%d] RESPONSE (isLeader belief=%t) (C=%d) (reqId=%d) (K=%s) (V=%s)", kv.me, isLeader, args.ReqId, args.Id, args.Key, reply.Value)
 		kv.mu.Unlock()
 	}
 }
@@ -156,11 +166,11 @@ func (kv *KVServer) applier() {
 			if op, ok := msg.Command.(Op); ok {
 				kv.mu.Lock()
 				if op.Operation == "Get" {
-					DPrintf(dApply, "S[%d] (C=%d) (op=%s) (K=%s) (index=%d) (term=%d)",
-						kv.me, op.Id, op.Operation, op.Key, msg.CommandIndex, msg.CommandTerm)
-				} else {
-					DPrintf(dApply, "S[%d] (C=%d) (op=%s) (K=%s) (V=%s) (index=%d) (term=%d)",
-						kv.me, op.Id, op.Operation, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm)
+					DPrintf(dApply, "S[%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (index=%d) (term=%d)",
+						kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm)
+				} else if op.Operation == "Put" {
+					DPrintf(dApply, "S[%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d)",
+						kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm)
 				}
 
 				// Make sure this is monotonic?
@@ -181,11 +191,17 @@ func (kv *KVServer) applier() {
 					}
 					kv.duplicate[op.Id] = op.ReqId
 				}
+				if op.Operation == "Get" {
+					DPrintf(dApply, "S[%d] AFTER (C=%d) (op=%s) (reqId=%d) (K=%s) (index=%d) (term=%d)",
+						kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm)
+				} else if op.Operation == "Put" {
+					DPrintf(dApply, "S[%d] AFTER (C=%d) (op=%s) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d)",
+						kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm)
+				}
 			}
 			// fmt.Println(kv.data)
 			kv.mu.Unlock()
 		} else if msg.SnapshotValid {
-			// DPrintf(dDecode, "[S%d] HELLO??????", kv.me)
 			// Read snapshot = data + duplicate + index
 			// Set values
 			kv.mu.Lock()
