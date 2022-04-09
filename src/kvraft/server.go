@@ -61,7 +61,7 @@ func DPrintf(dTopic logTopic, format string, a ...interface{}) (n int, err error
 	format = string(dTopic) + " " + format
 	if debugVerbosity == 1 {
 		log.Printf(format, a...)
-	} else if debugVerbosity == 0 {
+	} else if debugVerbosity == 2 {
 		if _, ok := debug_2[dTopic]; ok {
 			log.Printf(format, a...)
 		}
