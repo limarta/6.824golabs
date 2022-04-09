@@ -2,6 +2,7 @@ package kvraft
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -30,6 +31,7 @@ func setVerbosity() int {
 		}
 	}
 	debugVerbosity = level
+	fmt.Println("KV VERBOSITY: ", debugVerbosity)
 	debugStart = time.Now()
 	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
 	return level
@@ -46,18 +48,23 @@ const (
 	dApplySnap      logTopic = "APPLYSNAP"
 	dApplyPutAppend logTopic = "APPLYPUTAPPEND"
 	dApplyGet       logTopic = "APPLYGET"
+	dReceived       logTopic = "RECEIVED"
+	dSkip           logTopic = "SKIP"
 )
 const Debug = false
+
+var debug_2 map[logTopic]int = map[logTopic]int{dReceived: 1, dSnap: 1, dSkip: 1}
 
 func DPrintf(dTopic logTopic, format string, a ...interface{}) (n int, err error) {
 	// time := time.Since(debugStart).Microseconds()
 	// prefix := fmt.Sprintf("%06d %-7v ", time, string(dTopic))
+	format = string(dTopic) + " " + format
 	if debugVerbosity == 1 {
-		format = string(dTopic) + " " + format
 		log.Printf(format, a...)
-	} else if (debugVerbosity == 2) && dTopic == dSnap {
-		format = string(dTopic) + " " + format
-		log.Printf(format, a...)
+	} else if debugVerbosity == 0 {
+		if _, ok := debug_2[dTopic]; ok {
+			log.Printf(format, a...)
+		}
 	}
 	return
 }
@@ -88,6 +95,7 @@ func (kv *KVServer) Request(cmd Op) Err {
 		kv.duplicate[cmd.Id] = 0
 	}
 	if kv.duplicate[cmd.Id] >= cmd.ReqId {
+		DPrintf(dSkip, "S[%d] (Op=%v) (kv.dup=%d) (cmd.ReqId=%d)", kv.me, cmd, kv.duplicate[cmd.Id], cmd.ReqId)
 		kv.mu.Unlock()
 		return OK
 	}
@@ -166,17 +174,21 @@ func (kv *KVServer) applier() {
 			if op, ok := msg.Command.(Op); ok {
 				kv.mu.Lock()
 				if op.Operation == "Get" {
-					DPrintf(dApply, "S[%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (index=%d) (term=%d)",
-						kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm)
-				} else if op.Operation == "Put" {
-					DPrintf(dApply, "S[%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d)",
-						kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm)
+					DPrintf(dReceived, "S[%d] (index=%d) (term=%d) (op=%v k=%s n=%d)",
+						kv.me, msg.CommandIndex, msg.CommandTerm, op.Operation, op.Key, op.ReqId)
+					DPrintf(dApply, "S[%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (index=%d) (term=%d) (data=%v)",
+						kv.me, op.Id, op.Operation, op.ReqId, op.Key, msg.CommandIndex, msg.CommandTerm, kv.data)
+				} else {
+					DPrintf(dReceived, "S[%d] (index=%d) (term=%d) (op=%v k=%s v=%s n=%d)",
+						kv.me, msg.CommandIndex, msg.CommandTerm, op.Operation, op.Key, op.Value, op.ReqId)
+					DPrintf(dApply, "S[%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d) (data=%v)",
+						kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm, kv.data)
 				}
 
 				// Make sure this is monotonic?
-				// if kv.index >= msg.CommandIndex {
-				// 	panic("Why not increasing?")
-				// }
+				if kv.index > msg.CommandIndex {
+					panic("Why not increasing?")
+				}
 				kv.index = msg.CommandIndex
 
 				if op.ReqId > kv.duplicate[op.Id] {
@@ -192,11 +204,11 @@ func (kv *KVServer) applier() {
 					kv.duplicate[op.Id] = op.ReqId
 				}
 				if op.Operation == "Get" {
-					DPrintf(dApply, "S[%d] AFTER (C=%d) (op=%s) (reqId=%d) (K=%s) (index=%d) (term=%d)",
-						kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm)
+					DPrintf(dApply, "S[%d] AFTER (C=%d) (op=%s) (reqId=%d) (K=%s) (index=%d) (term=%d) (data=%v)",
+						kv.me, op.Id, op.Operation, op.ReqId, op.Key, msg.CommandIndex, msg.CommandTerm, kv.data)
 				} else if op.Operation == "Put" {
-					DPrintf(dApply, "S[%d] AFTER (C=%d) (op=%s) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d)",
-						kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm)
+					DPrintf(dApply, "S[%d] AFTER (C=%d) (op=%s) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d) (data=%v)",
+						kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm, kv.data)
 				}
 			}
 			// fmt.Println(kv.data)
@@ -205,6 +217,7 @@ func (kv *KVServer) applier() {
 			// Read snapshot = data + duplicate + index
 			// Set values
 			kv.mu.Lock()
+			DPrintf(dReceived, "S[%d] SNAPSHOT (index=%d) (term=%d)", kv.me, msg.SnapshotIndex, msg.SnapshotTerm)
 			r := bytes.NewBuffer(msg.Snapshot)
 			d := labgob.NewDecoder(r)
 			var data map[string]string
@@ -230,7 +243,7 @@ func (kv *KVServer) snapshot() {
 			kv.mu.Lock()
 
 			if kv.rf.RaftStateSize() >= kv.maxraftstate {
-				DPrintf(dSnap, "S[%d] (raftStateSize=%d) (max=%d)", kv.me, kv.rf.RaftStateSize(), kv.maxraftstate)
+				DPrintf(dSnap, "S[%d] (snapshot index=%d) (raftStateSize=%d) (max=%d)", kv.me, kv.index, kv.rf.RaftStateSize(), kv.maxraftstate)
 				// Snapshot = kv.data + kv.duplicate + index
 				w := new(bytes.Buffer)
 				e := labgob.NewEncoder(w)
@@ -295,6 +308,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	kv.data = make(map[string]string)
+	kv.index = 0
 	kv.duplicate = make(map[int64]int)
 
 	// You may need initialization code here.
