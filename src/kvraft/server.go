@@ -186,9 +186,9 @@ func (kv *KVServer) applier() {
 				}
 
 				// Make sure this is monotonic?
-				if kv.index > msg.CommandIndex {
-					panic("Why not increasing?")
-				}
+				// if kv.index > msg.CommandIndex {
+				// 	panic("Why not increasing?")
+				// }
 				kv.index = msg.CommandIndex
 
 				if op.ReqId > kv.duplicate[op.Id] {

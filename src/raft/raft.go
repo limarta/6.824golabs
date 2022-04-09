@@ -369,15 +369,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	prevLogIndex := args.PrevLogIndex
 	prevLogTerm := args.PrevLogTerm
 	if args.PrevLogIndex < rf.lastIncludedIndex {
-		DPrintf(dCut, "S[%d] (args.PrevLogIndex=%d) (rf.lastIncludedIndex=%d) (len Entry=%d) (len of remaining log=%d)",
-			rf.me, args.PrevLogIndex, rf.lastIncludedIndex, len(args.Entries), len(rf.logs))
+		DPrintf(dCut, "S[%d] (args.PrevLogIndex=%d) (rf.lastIncludedIndex=%d) (len Entry=%d) (len of remaining log=%d) (entries=%v) (log=%v)",
+			rf.me, args.PrevLogIndex, rf.lastIncludedIndex, len(args.Entries), len(rf.logs), args.Entries, rf.logs)
 		if min(len(args.Entries), rf.lastIncludedIndex-args.PrevLogIndex+1) == len(args.Entries) {
 			prevLogTerm = rf.lastIncludedLog.Term
 		} else {
 			prevLogTerm = args.Entries[rf.lastIncludedIndex-args.PrevLogIndex].Term
 		}
-		entries = args.Entries[min(len(args.Entries), rf.lastIncludedIndex-args.PrevLogIndex+1):]
+		entries = args.Entries[min(len(args.Entries), rf.lastIncludedIndex-args.PrevLogIndex):]
 		prevLogIndex = rf.lastIncludedIndex
+		DPrintf(dCut, "S[%d] (new args.PrevLogIndex=%d) (new len entry=%d) (new entries=%v)",
+			rf.me, args.PrevLogIndex, len(args.Entries), args.Entries)
 	}
 	if rf.atIndex(prevLogIndex).Term != prevLogTerm { // Has index; wrong term
 		DPrintf(dAppend, "[S%d] (isBeat=%t) right (prevLogIndex=%d) wrong (log prevLogTerm=%d) (entry prevLogTerm=%d)",
@@ -633,8 +635,6 @@ func (rf *Raft) forwardCommits(electionTerm int) {
 			DPrintf(dSearchCommit, "[S%d] (max N=%d) (commitIndex=%d) (rf.lastIncludedIndex=%d) (rf.lastIncludedLog=%v)",
 				rf.me, N, rf.commitIndex, rf.lastIncludedIndex, rf.lastIncludedLog)
 			for ; N > rf.commitIndex; N-- {
-				DPrintf(dSearchCommit, "[S%d] (N=%d) (at index term=%d)",
-					rf.me, N, rf.atIndex(N).Term)
 				if rf.atIndex(N).Term == rf.term {
 					break
 				}
