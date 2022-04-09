@@ -369,7 +369,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	prevLogIndex := args.PrevLogIndex
 	prevLogTerm := args.PrevLogTerm
 	if args.PrevLogIndex < rf.lastIncludedIndex {
-		FPrintf(dCut, "S[%d] (args.PrevLogIndex=%d) (rf.lastIncludedIndex=%d) (len Entry=%d) (len of remaining log=%d)",
+		DPrintf(dCut, "S[%d] (args.PrevLogIndex=%d) (rf.lastIncludedIndex=%d) (len Entry=%d) (len of remaining log=%d)",
 			rf.me, args.PrevLogIndex, rf.lastIncludedIndex, len(args.Entries), len(rf.logs))
 		if min(len(args.Entries), rf.lastIncludedIndex-args.PrevLogIndex+1) == len(args.Entries) {
 			prevLogTerm = rf.lastIncludedLog.Term
@@ -633,13 +633,15 @@ func (rf *Raft) forwardCommits(electionTerm int) {
 			DPrintf(dSearchCommit, "[S%d] (max N=%d) (commitIndex=%d) (rf.lastIncludedIndex=%d) (rf.lastIncludedLog=%v)",
 				rf.me, N, rf.commitIndex, rf.lastIncludedIndex, rf.lastIncludedLog)
 			for ; N > rf.commitIndex; N-- {
+				DPrintf(dSearchCommit, "[S%d] (N=%d) (at index term=%d)",
+					rf.me, N, rf.atIndex(N).Term)
 				if rf.atIndex(N).Term == rf.term {
 					break
 				}
 			}
 
 			if N <= rf.commitIndex { // Could not find an N
-				DPrintf(dCommit, "[S%d] no new N (term=%d) (lastIncludedIndex=%d) (lastIncludedLog=%v) (log=%d)",
+				DPrintf(dCommit, "[S%d] no new N (term=%d) (lastIncludedIndex=%d) (lastIncludedLog=%v) (log=%v)",
 					rf.me, rf.term, rf.lastIncludedIndex, rf.lastIncludedLog, rf.logs)
 			} else {
 				DPrintf(dCommit, "[S%d] FOUND (N=%d) (term=%d) (lastIncludedIndex=%d) (lastIncludedLog=%v) (log=%v)",
@@ -900,7 +902,7 @@ func (rf *Raft) startElection(electionTerm int) {
 			rf.job = Leader
 			rf.persist()
 			for i := range rf.nextIndex {
-				rf.nextIndex[i] = len(rf.logs)
+				rf.nextIndex[i] = rf.logSize()
 				rf.matchIndex[i] = 0
 			}
 			break
