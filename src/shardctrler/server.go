@@ -17,20 +17,20 @@ type ShardCtrler struct {
 	applyCh chan raft.ApplyMsg
 	dead    int32 // set by Kill()
 
-	maxraftstate int
-	configs      []Config // indexed by config num
-	duplicate    map[int64]int
-	index        int
+	configs   []Config // indexed by config num
+	duplicate map[int64]int
+	index     int
 }
 
-// type Op struct {
-// 	Key       string
-// 	Value     string
-// }
 type Op struct {
 	Operation string
 	Id        int64
 	ReqId     int
+	Servers   map[int][]string // new GID -> servers mappings // Join
+	GIDs      []int            // Leave
+	Shard     int              // Move
+	GID       int              // Move
+	Num       int              // Query
 }
 
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
@@ -38,6 +38,7 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 		Operation: "Join",
 		Id:        args.Id,
 		ReqId:     args.ReqId,
+		Servers:   args.Servers,
 	}
 	err := sc.Request(cmd)
 	reply.Err = err
@@ -48,6 +49,7 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 		Operation: "Leave",
 		Id:        args.Id,
 		ReqId:     args.ReqId,
+		GIDs:      args.GIDs,
 	}
 	err := sc.Request(cmd)
 	reply.Err = err
@@ -58,6 +60,8 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 		Operation: "Move",
 		Id:        args.Id,
 		ReqId:     args.ReqId,
+		Shard:     args.Shard,
+		GID:       args.GID,
 	}
 	err := sc.Request(cmd)
 	reply.Err = err
@@ -68,18 +72,23 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 		Operation: "Query",
 		Id:        args.Id,
 		ReqId:     args.ReqId,
+		Num:       args.Num,
 	}
 	err := sc.Request(cmd)
 	reply.Err = err
-	// if err == OK {
-	// 	kv.mu.Lock()
-	// 	reply.Value = kv.data[args.Key]
-	// 	_, isLeader := kv.rf.GetState()
-	// 	if !isLeader {
-	// 		reply.Err = ErrWrongLeader
-	// 	}
-	// 	kv.mu.Unlock()
-	// }
+	if err == OK {
+		sc.mu.Lock()
+		if args.Num == -1 || args.Num > len(sc.configs)-1 {
+			reply.Config = sc.configs[len(sc.configs)-1]
+		} else {
+			reply.Config = sc.configs[args.Num]
+		}
+		_, isLeader := sc.rf.GetState()
+		if !isLeader {
+			reply.Err = ErrWrongLeader
+		}
+		sc.mu.Unlock()
+	}
 }
 
 func (sc *ShardCtrler) Request(cmd Op) Err {
@@ -96,17 +105,6 @@ func (sc *ShardCtrler) Request(cmd Op) Err {
 	_, term, isLeader := sc.rf.Start(cmd)
 
 	if isLeader {
-		// 		if cmd.Operation == "Get" {
-		// 			DPrintf(dGet, "S[%d] (isLeader=%t) (C=%d) (reqId=%d) (key=%s) (index=%d) (term=%d)",
-		// 				kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, index, term)
-		// 		} else if cmd.Operation == "Put" {
-		// 			DPrintf(dPut, "S[%d]  (isLeader=%t) (C=%d) (reqId=%d) (key=%s) (value=%s) (index=%d) (term=%d)",
-		// 				kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term)
-		// 		} else if cmd.Operation == "Append" {
-		// 			DPrintf(dAppend, "S[%d] (isLeader=%t) (C=%d) (reqId=%d) (key=%s) (value=%s) (index=%d) (term=%d)",
-		// 				kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term)
-		// 		}
-
 		start := time.Now()
 
 		for !sc.killed() && time.Now().Sub(start).Seconds() < float64(2) {
@@ -133,46 +131,20 @@ func (sc *ShardCtrler) applier() {
 			if op, ok := msg.Command.(Op); ok {
 				sc.mu.Lock()
 
-				// Make sure this is monotonic?
 				// if kv.index > msg.CommandIndex {
 				// 	panic("Why not increasing?")
 				// }
 				sc.index = msg.CommandIndex
 
 				if op.ReqId > sc.duplicate[op.Id] {
-					// if op.Operation == "" {
-					// 	kv.data[op.Key] = op.Value
-					// } else if op.Operation == "Append" {
-					// 	if val, ok := kv.data[op.Key]; ok {
-					// 		sc.data[op.Key] = val + op.Value
-					// 	} else {
-					// 		sc.data[op.Key] = op.Value
-					// 	}
-					// }
-					// sc.duplicate[op.Id] = op.ReqId
+					if op.Operation == "Join" {
+					} else if op.Operation == "Leave" {
+					} else if op.Operation == "Move" {
+					}
+					sc.duplicate[op.Id] = op.ReqId
 				}
 			}
 			sc.mu.Unlock()
-			// } else if msg.SnapshotValid {
-			// 	// Read snapshot = data + duplicate + index
-			// 	// Set values
-			// 	kv.mu.Lock()
-			// 	DPrintf(dReceived, "S[%d] SNAPSHOT (index=%d) (term=%d)", kv.me, msg.SnapshotIndex, msg.SnapshotTerm)
-			// 	r := bytes.NewBuffer(msg.Snapshot)
-			// 	d := labgob.NewDecoder(r)
-			// 	var data map[string]string
-			// 	var duplicate map[int64]int
-			// 	var index int
-			// 	if d.Decode(&data) != nil || d.Decode(&duplicate) != nil || d.Decode(&index) != nil {
-			// 		DPrintf(dDecode, "[S%d] ERROR", kv.me)
-			// 	} else {
-			// 		kv.data = data
-			// 		kv.duplicate = duplicate
-			// 		kv.index = index
-			// 		DPrintf(dDecode, "[S%d] (index=%d) (data=%v) (dup=%v)", kv.me, index, data, duplicate)
-			// 	}
-
-			// 	kv.mu.Unlock()
 		}
 	}
 }
@@ -215,11 +187,9 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sc.applyCh = make(chan raft.ApplyMsg)
 	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
 
-	// sc.data = make(map[string]string)
 	sc.index = 0
 	sc.duplicate = make(map[int64]int)
 
-	// You may need initialization code here.
 	go sc.applier()
 	return sc
 }
