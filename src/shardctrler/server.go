@@ -139,23 +139,64 @@ func (sc *ShardCtrler) applier() {
 
 				if op.ReqId > sc.duplicate[op.Id] {
 					config := sc.configs[len(sc.configs)-1]
-					new_config := Config{Num: config.Num + 1}
-					gids := make([]int, len(config.Groups))
-					for k := range config.Groups {
-						gids = append(gids, k)
-					}
-					sort.Ints(gids)
-
+					newConfig := Config{Num: config.Num + 1}
 					if op.Operation == "Join" {
-						// op.Servers
+						newGroups := make(map[int][]string)
+						for k, v := range config.Groups {
+							newGroups[k] = v
+						}
+						gids := make([]int, len(op.Servers))
+						for k := range gids {
+							gids = append(gids, k)
+						}
+						sort.Ints(gids)
+						for gid := range gids {
+							newGroups[gid] = append(newGroups[gid], op.Servers[gid]...)
+						}
+
+						newShards := config.Shards
+
+						avg := NShards / len(newGroups)
+						_ = avg
+						// Reallocate shards
+
+						newConfig.Groups = newGroups
+						newConfig.Shards = newShards
 					} else if op.Operation == "Leave" {
-						// op.GIDs
+						newGroups := make(map[int][]string)
+						for k, v := range config.Groups {
+							newGroups[k] = v
+						}
+
+						for gid := range op.GIDs {
+							delete(newGroups, gid)
+						}
+
+						avg := NShards / len(newGroups)
+						_ = avg
+						gidToShard := make(map[int][]int)
+
+						newShards := config.Shards
+						// Remove old gids and rebalance
+
+						for i, gid := range newShards {
+							gidToShard[gid] = append(gidToShard[gid], i)
+						}
+						gids := make([]int, len(gidToShard))
+						for k := range gidToShard {
+							gids = append(gids, k)
+						}
+						sort.Ints(gids)
+						// Distribute efficiently
+
+						newConfig.Groups = newGroups
+						newConfig.Shards = newShards
 					} else if op.Operation == "Move" {
-						new_config.Shards = config.Shards
-						new_config.Shards[op.Shard] = op.GID
+						newConfig.Shards = config.Shards
+						newConfig.Shards[op.Shard] = op.GID
 					}
 
-					sc.configs = append(sc.configs, new_config)
+					sc.configs = append(sc.configs, newConfig)
 					sc.duplicate[op.Id] = op.ReqId
 				}
 			}
