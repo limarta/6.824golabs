@@ -10,17 +10,6 @@ import (
 	"6.824/raft"
 )
 
-// type KVServer struct {
-// 	mu           sync.Mutex
-// 	me           int
-// 	rf           *raft.Raft
-// 	applyCh      chan raft.ApplyMsg
-// 	dead         int32 // set by Kill()
-// 	maxraftstate int   // snapshot if log grows this big
-// 	data         map[string]string
-// 	duplicate    map[int64]int
-// 	index        int
-// }
 type ShardCtrler struct {
 	mu      sync.Mutex
 	me      int
@@ -28,25 +17,20 @@ type ShardCtrler struct {
 	applyCh chan raft.ApplyMsg
 	dead    int32 // set by Kill()
 
-	// Your data here.
-
-	configs   []Config // indexed by config num
-	duplicate map[int64]int
-	index     int
+	maxraftstate int
+	configs      []Config // indexed by config num
+	duplicate    map[int64]int
+	index        int
 }
 
 // type Op struct {
 // 	Key       string
 // 	Value     string
-// 	Operation string
-// 	Id        int64
-// 	ReqId     int
 // }
 type Op struct {
 	Operation string
 	Id        int64
 	ReqId     int
-	// actual config data
 }
 
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
@@ -80,13 +64,13 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 }
 
 func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
-	// cmd := Op{
-	// 	Key:       args.Key,
-	// 	Id:        args.Id,
-	// 	ReqId:     args.ReqId,
-	// 	Operation: "Get"}
-	// err := kv.Request(cmd)
-	// reply.Err = err
+	cmd := Op{
+		Operation: "Query",
+		Id:        args.Id,
+		ReqId:     args.ReqId,
+	}
+	err := sc.Request(cmd)
+	reply.Err = err
 	// if err == OK {
 	// 	kv.mu.Lock()
 	// 	reply.Value = kv.data[args.Key]
@@ -96,7 +80,6 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	// 	}
 	// 	kv.mu.Unlock()
 	// }
-	// Your code here.
 }
 
 func (sc *ShardCtrler) Request(cmd Op) Err {
@@ -140,7 +123,7 @@ func (sc *ShardCtrler) Request(cmd Op) Err {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
-	return Err("ErrWrongLeader")
+	return ErrWrongLeader
 }
 
 func (sc *ShardCtrler) applier() {
@@ -232,7 +215,11 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sc.applyCh = make(chan raft.ApplyMsg)
 	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
 
-	// Your code here.
+	// sc.data = make(map[string]string)
+	sc.index = 0
+	sc.duplicate = make(map[int64]int)
 
+	// You may need initialization code here.
+	go sc.applier()
 	return sc
 }
