@@ -1,6 +1,7 @@
 package shardctrler
 
 import (
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -137,10 +138,24 @@ func (sc *ShardCtrler) applier() {
 				sc.index = msg.CommandIndex
 
 				if op.ReqId > sc.duplicate[op.Id] {
-					if op.Operation == "Join" {
-					} else if op.Operation == "Leave" {
-					} else if op.Operation == "Move" {
+					config := sc.configs[len(sc.configs)-1]
+					new_config := Config{Num: config.Num + 1}
+					gids := make([]int, len(config.Groups))
+					for k := range config.Groups {
+						gids = append(gids, k)
 					}
+					sort.Ints(gids)
+
+					if op.Operation == "Join" {
+						// op.Servers
+					} else if op.Operation == "Leave" {
+						// op.GIDs
+					} else if op.Operation == "Move" {
+						new_config.Shards = config.Shards
+						new_config.Shards[op.Shard] = op.GID
+					}
+
+					sc.configs = append(sc.configs, new_config)
 					sc.duplicate[op.Id] = op.ReqId
 				}
 			}
