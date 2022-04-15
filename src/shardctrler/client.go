@@ -6,6 +6,7 @@ package shardctrler
 
 import (
 	"crypto/rand"
+	"fmt"
 	"math/big"
 	"time"
 
@@ -82,6 +83,7 @@ func (ck *Clerk) Leave(gids []int) {
 	args.GIDs = gids
 	args.Id = ck.id
 	args.ReqId = ck.reqId
+	fmt.Println("Leave ", args)
 
 	for {
 		// try each known server.
@@ -103,6 +105,7 @@ func (ck *Clerk) Move(shard int, gid int) {
 	args.GID = gid
 	args.Id = ck.id
 	args.ReqId = ck.reqId
+	fmt.Println("Move ", args)
 
 	for {
 		// try each known server.
