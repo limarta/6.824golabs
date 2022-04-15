@@ -2,7 +2,10 @@ package shardctrler
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,13 +47,36 @@ const (
 	dQuery   logTopic = "QUERY"
 	dJoin    logTopic = "JOIN"
 	dLeave   logTopic = "LEAVE"
+	dBalance logTopic = "BALANCE"
 )
+
+var debugVerbosity int
+var debugStart time.Time
+
+func setVerbosity() int {
+	v := os.Getenv("VERBOSE")
+	level := 0
+	if v != "" {
+		var err error
+		level, err = strconv.Atoi(v)
+		if err != nil {
+			log.Fatalf("Invalid verbosity %v", v)
+		}
+	}
+	debugVerbosity = level
+	fmt.Println("KV VERBOSITY: ", debugVerbosity)
+	debugStart = time.Now()
+	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
+	return level
+}
 
 func DPrintf(dTopic logTopic, format string, a ...interface{}) (n int, err error) {
 	// time := time.Since(debugStart).Microseconds()
 	// prefix := fmt.Sprintf("%06d %-7v ", time, string(dTopic))
 	format = string(dTopic) + " " + format
-	fmt.Printf(format, a...)
+	if debugVerbosity == 1 {
+		log.Printf(format, a...)
+	}
 	return
 }
 
@@ -73,11 +99,8 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 		GIDs:      args.GIDs,
 	}
 
-	// fmt.Printf("(Op: %s) (Id=%d) (ReqId=%d) (GIDs=%v)\n", cmd.Operation, cmd.Id, cmd.ReqId, cmd.GIDs)
 	err := sc.Request(cmd)
-	// fmt.Println("Error: ", err)
 	reply.WrongLeader = (err != OK)
-	// fmt.Println("isWrongLeader ", reply.WrongLeader)
 }
 
 func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
@@ -105,7 +128,6 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	reply.WrongLeader = (err != OK)
 	if err == OK {
 		sc.mu.Lock()
-		fmt.Println("Before query configs: ", sc.configs)
 		if args.Num == -1 || args.Num > len(sc.configs)-1 {
 			reply.Config = sc.configs[len(sc.configs)-1]
 		} else {
@@ -115,7 +137,6 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 		if !isLeader {
 			reply.WrongLeader = true
 		} else {
-			fmt.Printf("S[%d] Query response %v\n", sc.me, reply.Config)
 		}
 		sc.mu.Unlock()
 	}
@@ -135,7 +156,15 @@ func (sc *ShardCtrler) Request(cmd Op) Err {
 	_, term, isLeader := sc.rf.Start(cmd)
 
 	if isLeader {
-		DPrintf(dRequest, "S[%d] (cmd=%v)\n", sc.me, cmd)
+		if cmd.Operation == "Query" {
+			DPrintf(dRequest, "S[%d] (op=%s) (config_id=%d)", sc.me, cmd.Operation, cmd.Num)
+		} else if cmd.Operation == "Join" {
+			DPrintf(dRequest, "S[%d] (op=%s) (servers=%v)", sc.me, cmd.Operation, cmd.Servers)
+		} else if cmd.Operation == "Leave" {
+			DPrintf(dRequest, "S[%d] (op=%s) (GIDs=%v)", sc.me, cmd.Operation, cmd.GIDs)
+		} else if cmd.Operation == "Move" {
+			DPrintf(dRequest, "S[%d] (op=%s) (Shard=%d) (GID=%d)", sc.me, cmd.Operation, cmd.Shard, cmd.GID)
+		}
 		start := time.Now()
 
 		for !sc.killed() && time.Now().Sub(start).Seconds() < float64(2) {
@@ -171,8 +200,8 @@ func (sc *ShardCtrler) applier() {
 				if op.ReqId > sc.duplicate[op.Id] {
 					config := sc.configs[len(sc.configs)-1]
 					newConfig := Config{Num: config.Num + 1}
+					DPrintf(dApply, "S[%d] (newConfig #=%d)", sc.me, newConfig.Num)
 					if op.Operation == "Join" {
-						DPrintf(dJoin, "S[%d]", sc.me)
 						newGroups := make(map[int][]string)
 						for k, v := range config.Groups {
 							newGroups[k] = v
@@ -187,17 +216,23 @@ func (sc *ShardCtrler) applier() {
 							GIDs = append(GIDs, gid)
 						}
 						sort.Ints(GIDs)
-						sc.rebalance(newShards, GIDs)
+						for i, gid := range newShards {
+							if gid == 0 {
+								newShards[i] = GIDs[0]
+							}
+						}
+						// Check for 0; assign
 
 						newConfig.Groups = newGroups
-						newConfig.Shards = newShards
+						newConfig.Shards = sc.rebalance(newShards, GIDs)
+						DPrintf(dJoin, "S[%d] (newGroups=%v) (newShards=%v)", sc.me, newGroups, newConfig.Shards)
 					} else if op.Operation == "Leave" {
 						newGroups := make(map[int][]string)
 						for k, v := range config.Groups {
 							newGroups[k] = v
 						}
 
-						for gid := range op.GIDs {
+						for _, gid := range op.GIDs {
 							delete(newGroups, gid)
 						}
 						GIDs := make([]int, 0)
@@ -205,6 +240,7 @@ func (sc *ShardCtrler) applier() {
 							GIDs = append(GIDs, gid)
 						}
 						sort.Ints(GIDs)
+						DPrintf(dLeave, "S[%d] (newGroups=%v) (new GIDs=%v)", sc.me, newGroups, GIDs)
 
 						newShards := config.Shards
 						for i, gid := range newShards {
@@ -216,13 +252,17 @@ func (sc *ShardCtrler) applier() {
 								}
 							}
 							if found {
-								newShards[i] = GIDs[0]
+								if len(GIDs) == 0 {
+									newShards[i] = 0
+								} else {
+									newShards[i] = GIDs[0]
+								}
 							}
 						}
 
-						sc.rebalance(newShards, GIDs)
 						newConfig.Groups = newGroups
-						newConfig.Shards = newShards
+						newConfig.Shards = sc.rebalance(newShards, GIDs)
+						DPrintf(dLeave, "S[%d] (newGroups=%v) (newShards=%v)", sc.me, newGroups, newConfig.Shards)
 					} else if op.Operation == "Move" {
 						newConfig.Shards = config.Shards
 						newConfig.Shards[op.Shard] = op.GID
@@ -233,14 +273,15 @@ func (sc *ShardCtrler) applier() {
 					}
 					sc.duplicate[op.Id] = op.ReqId
 				}
-				fmt.Printf("S[%d] Configurations: %v\n", sc.me, sc.configs)
+				DPrintf(dApply, "S[%d] (new configs %v)", sc.me, sc.configs)
 				sc.mu.Unlock()
 			}
 		}
 	}
 }
 
-func (sc *ShardCtrler) rebalance(shards [NShards]int, GIDs []int) {
+func (sc *ShardCtrler) rebalance(shards [NShards]int, GIDs []int) [NShards]int {
+	DPrintf(dBalance, "S[%d] (shards=%v) (GIDs=%v)", sc.me, shards, GIDs)
 	for {
 		freq := make(map[int][]int)
 		min := NShards + 1
@@ -250,7 +291,7 @@ func (sc *ShardCtrler) rebalance(shards [NShards]int, GIDs []int) {
 		for i, gid := range shards {
 			freq[gid] = append(freq[gid], i)
 		}
-		for gid := range GIDs {
+		for _, gid := range GIDs {
 			if max < len(freq[gid]) {
 				max_gid = gid
 				max = len(freq[gid])
@@ -260,13 +301,17 @@ func (sc *ShardCtrler) rebalance(shards [NShards]int, GIDs []int) {
 				min = len(freq[gid])
 			}
 		}
-		if max_gid-min_gid > 1 {
+		// DPrintf(dBalance, "S[%d] (freq=%v) (min=%d min_gid=%d) (max=%d max_gid=%d)", sc.me, freq, min, min_gid, max, max_gid)
+		if max-min > 1 {
 			index := freq[max_gid][len(freq[max_gid])-1]
+			// DPrintf(dBalance, "S[%d] (swap index=%d)", sc.me, index)
 			shards[index] = min_gid
 		} else {
 			break
 		}
 	}
+	DPrintf(dBalance, "S[%d] (new_balance=%v)", sc.me, shards)
+	return shards
 }
 
 //
