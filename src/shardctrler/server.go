@@ -245,13 +245,13 @@ func (sc *ShardCtrler) applier() {
 						newShards := config.Shards
 						for i, gid := range newShards {
 							found := false
-							for del_gid := range newShards {
+							for _, del_gid := range GIDs {
 								if del_gid == gid {
 									found = true
 									break
 								}
 							}
-							if found {
+							if !found {
 								if len(GIDs) == 0 {
 									newShards[i] = 0
 								} else {
