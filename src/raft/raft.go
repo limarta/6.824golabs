@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"fmt"
 	"math/rand"
+	"reflect"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -409,9 +410,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.me, args.LeaderId, len(entries) == 0, prevLogIndex, rf.atIndex(prevLogIndex).Term, prevLogTerm, len(rf.logs), len(entries))
 	i := 0
 	for ; i < len(entries) && prevLogIndex+i+1 < rf.logSize(); i++ {
-		if rf.atIndex(i+prevLogIndex+1) != entries[i] {
+		if !reflect.DeepEqual(rf.atIndex(i+prevLogIndex+1), entries[i]) {
 			break
 		}
+		// if rf.atIndex(i+prevLogIndex+1) != entries[i] {
+		// 	break
+		// }
 	}
 
 	if i < len(entries) { // All entries match follower's log
