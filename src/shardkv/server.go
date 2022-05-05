@@ -57,8 +57,10 @@ const Debug = false
 func DPrintf(dTopic logTopic, format string, a ...interface{}) (n int, err error) {
 	// time := time.Since(debugStart).Microseconds()
 	// prefix := fmt.Sprintf("%06d %-7v ", time, string(dTopic))
-	format = string(dTopic) + " " + format
-	log.Printf(format, a...)
+	if debugVerbosity == 1 {
+		format = string(dTopic) + " " + format
+		log.Printf(format, a...)
+	}
 	return
 }
 
@@ -137,11 +139,34 @@ func (kv *ShardKV) Request(cmd Op) Err {
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	cmd := Op{
+		Key:       args.Key,
+		Id:        args.Id,
+		ReqId:     args.ReqId,
+		Operation: "Get"}
+	err := kv.Request(cmd)
+	reply.Err = err
+	if err == OK {
+		kv.mu.Lock()
+		reply.Value = kv.data[args.Key]
+		_, isLeader := kv.rf.GetState()
+		if !isLeader {
+			reply.Err = ErrWrongLeader
+		}
+		DPrintf(dGet, "[S%d] RESPONSE (isLeader belief=%t) (C=%d) (reqId=%d) (K=%s) (V=%s)", kv.me, isLeader, args.ReqId, args.Id, args.Key, reply.Value)
+		kv.mu.Unlock()
+	}
 }
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	cmd := Op{
+		Key:       args.Key,
+		Value:     args.Value,
+		Id:        args.Id,
+		ReqId:     args.ReqId,
+		Operation: args.Op}
+	err := kv.Request(cmd)
+	reply.Err = err
 }
 
 func (kv *ShardKV) applier() {
@@ -188,7 +213,6 @@ func (kv *ShardKV) applier() {
 						kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm, kv.data)
 				}
 			}
-			// fmt.Println(kv.data)
 			kv.mu.Unlock()
 		} else if msg.SnapshotValid {
 			// Read snapshot = data + duplicate + index
@@ -239,9 +263,10 @@ func (kv *ShardKV) snapshot() {
 func (kv *ShardKV) poll() {
 	for !kv.killed() {
 		kv.mu.Lock()
-		time.Sleep(100 * time.Millisecond)
 		kv.config = kv.shardclerk.Query(-1)
+		// fmt.Printf("S[%d] (config=%v)", kv.me, kv.config)
 		kv.mu.Unlock()
+		time.Sleep(100 * time.Millisecond)
 	}
 
 }
@@ -255,6 +280,7 @@ func (kv *ShardKV) poll() {
 func (kv *ShardKV) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
+	fmt.Printf("S[%d-%d] killed\n", kv.gid, kv.me)
 	// Your code here, if desired.
 }
 func (kv *ShardKV) killed() bool {
