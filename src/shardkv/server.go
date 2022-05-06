@@ -202,6 +202,12 @@ func (kv *ShardKV) applier() {
 				kv.index = msg.CommandIndex
 
 				if op.Operation == "Reconfig" {
+					mapCopy := make(map[string]string)
+					for k, v := range kv.curData() {
+						mapCopy[k] = v
+					}
+					kv.data = append(kv.data, mapCopy)
+
 					gidsMap := make(map[int]bool)
 					for i, gid := range kv.config.Shards {
 						if op.Config.Shards[i] == kv.me && gid != kv.me {
@@ -214,34 +220,16 @@ func (kv *ShardKV) applier() {
 					}
 					sort.Ints(gidsToContact)
 
+					var wg sync.WaitGroup
 					for gid := range gidsToContact {
+						wg.Add(1)
+						go func(g int, o Op) {
+							kv.requestTransfer(g, o)
+						}(gid, op)
 						// Create clerk for each gid
-						servers := kv.config.Groups[gid]
-						args := TransferArgs{}
-						for si := 0; si < len(servers); si++ {
-							srv := kv.make_end(servers[si])
-							var reply TransferReply
-							kv.mu.Unlock()
-							ok := srv.Call("ShardKV.Transfer", &args, &reply)
-							kv.mu.Lock()
-							if ok && (reply.Err == OK || reply.Err == ErrTransfer) {
-								for k, v := range reply.Data {
-									if op.Config.Shards[key2shard(k)] == kv.gid && kv.config.Shards[key2shard(k)] != kv.gid {
-										kv.curData()[k] = v
-									}
-								}
-							}
-							if ok && (reply.Err == ErrWrongGroup) {
-								// Save data?
-							}
-							// ... not ok, or ErrWrongLeader
-						}
 					}
+					wg.Wait()
 					kv.config = op.Config
-
-					// Sort the GIDs
-					// Send an RPC to each GID
-
 				} else {
 					if op.ReqId > kv.duplicate[op.Id] {
 						shard := key2shard(op.Key)
@@ -259,7 +247,6 @@ func (kv *ShardKV) applier() {
 							// 	// GID responsible for shard
 						} else {
 							// Somehow convey that we are not responsible
-
 						}
 					}
 				}
@@ -282,6 +269,7 @@ func (kv *ShardKV) applier() {
 			var data []map[string]string
 			var duplicate map[int64]int
 			var index int
+			// var config shardctrler.Config
 			if d.Decode(&data) != nil || d.Decode(&duplicate) != nil || d.Decode(&index) != nil {
 				DPrintf(dDecode, "[S%d] ERROR", kv.me)
 			} else {
@@ -294,6 +282,35 @@ func (kv *ShardKV) applier() {
 			kv.mu.Unlock()
 		}
 	}
+}
+
+func (kv *ShardKV) requestTransfer(gid int, op Op) {
+	servers := kv.config.Groups[gid]
+	args := TransferArgs{op.Config.Num}
+	transferred := false
+	for !kv.killed() && !transferred {
+		for si := 0; si < len(servers); si++ {
+			srv := kv.make_end(servers[si])
+			var reply TransferReply
+			kv.mu.Unlock()
+			ok := srv.Call("ShardKV.Transfer", &args, &reply)
+			kv.mu.Lock()
+			if ok {
+				if reply.Err == OK {
+					for k, v := range reply.Data {
+						if op.Config.Shards[key2shard(k)] == kv.gid && kv.config.Shards[key2shard(k)] != kv.gid {
+							kv.curData()[k] = v
+						}
+					}
+					transferred = true
+					break
+				} else if reply.Err == ErrTransfer {
+
+				}
+			}
+		}
+	}
+
 }
 
 func (kv *ShardKV) snapshot() {
@@ -321,15 +338,20 @@ func (kv *ShardKV) snapshot() {
 
 func (kv *ShardKV) Transfer(args *TransferArgs, reply *TransferReply) {
 	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if args.ConfigNum > len(kv.data) {
+		reply.Err = ErrTransfer
+		return
+	}
 	data := make(map[string]string)
 	for k, v := range kv.data[args.ConfigNum] {
 		data[k] = v
 	}
+	reply.Err = OK
 	reply.Data = data
-	kv.mu.Unlock()
 }
 
-func (kv *ShardKV) reconfigure(term int) {
+func (kv *ShardKV) reconfigure() {
 	// Commit to raft
 	kv.mu.Unlock()
 	for !kv.killed() {
@@ -338,6 +360,7 @@ func (kv *ShardKV) reconfigure(term int) {
 			op := Op{Operation: "Configure", Id: -1, ReqId: kv.unconfigured[0].Num, Config: kv.unconfigured[0]}
 			err := kv.Request(op)
 			kv.mu.Unlock()
+			// Check whether we are still leader at this point
 			if err == OK {
 				kv.mu.Lock()
 				kv.unconfigured = kv.unconfigured[1:]
@@ -348,7 +371,7 @@ func (kv *ShardKV) reconfigure(term int) {
 			}
 		}
 		kv.mu.Unlock()
-		time.Sleep(10)
+		time.Sleep(10 * time.Millisecond)
 	}
 
 }
@@ -373,27 +396,6 @@ func (kv *ShardKV) poll() {
 		kv.unconfigured = append(kv.unconfigured, kv.shardclerk.Query(nextConfigNum))
 		kv.mu.Unlock()
 
-		time.Sleep(100 * time.Millisecond)
-	}
-	// send to raft here
-	// wait to see if configure number is greater before deleting from unconfigured list
-	// cur_term := 0
-	// for !kv.killed() {
-	// 	term, isLeader := kv.rf.GetState()
-	// 	if isLeader && cur_term < term {
-	// 		kv.mu.Lock()
-	// 		kv.unconfigured = make([]shardctrler.Config, 0)
-	// 		kv.mu.Unlock()
-	// 		go kv.newConfigs(term)
-	// 		go kv.reconfigure(term)
-	// 	}
-	// 	cur_term = term
-	// 	time.Sleep(100)
-	// }
-	for !kv.killed() {
-		kv.mu.Lock()
-		kv.config = kv.shardclerk.Query(-1)
-		kv.mu.Unlock()
 		time.Sleep(100 * time.Millisecond)
 	}
 }
@@ -474,6 +476,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	go kv.applier()
 	go kv.snapshot()
 	go kv.poll()
+	go kv.reconfigure()
 
 	return kv
 
