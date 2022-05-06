@@ -53,6 +53,7 @@ type TransferArgs struct {
 }
 
 type TransferReply struct {
-	Err  Err
-	Data map[string]string
+	Err       Err
+	Data      map[string]string
+	Duplicate map[int64]int
 }
