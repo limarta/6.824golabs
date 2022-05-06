@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -51,6 +52,7 @@ const (
 	dApplyGet       logTopic = "APPLYGET"
 	dReceived       logTopic = "RECEIVED"
 	dSkip           logTopic = "SKIP"
+	dKilled         logTopic = "KILLED"
 )
 const Debug = false
 
@@ -70,6 +72,7 @@ type Op struct {
 	Operation string
 	Id        int64
 	ReqId     int
+	Config    shardctrler.Config
 }
 
 type ShardKV struct {
@@ -82,11 +85,12 @@ type ShardKV struct {
 	ctrlers      []*labrpc.ClientEnd
 	shardclerk   *shardctrler.Clerk
 	config       shardctrler.Config
+	data         [](map[string]string)
 	maxraftstate int   // snapshot if log grows this big
 	dead         int32 // set by Kill()
-	data         map[string]string
 	duplicate    map[int64]int
 	index        int
+	unconfigured []shardctrler.Config
 
 	// Your definitions here.
 }
@@ -138,6 +142,10 @@ func (kv *ShardKV) Request(cmd Op) Err {
 	return ErrWrongLeader
 }
 
+func (kv *ShardKV) curData() map[string]string { // Must be called with a lock
+	return kv.data[len(kv.data)-1]
+}
+
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	cmd := Op{
 		Key:       args.Key,
@@ -148,7 +156,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	reply.Err = err
 	if err == OK {
 		kv.mu.Lock()
-		reply.Value = kv.data[args.Key]
+		reply.Value = kv.curData()[args.Key]
 		_, isLeader := kv.rf.GetState()
 		if !isLeader {
 			reply.Err = ErrWrongLeader
@@ -175,17 +183,17 @@ func (kv *ShardKV) applier() {
 		if msg.CommandValid {
 			if op, ok := msg.Command.(Op); ok {
 				kv.mu.Lock()
-				if op.Operation == "Get" {
-					DPrintf(dReceived, "S[%d] (index=%d) (term=%d) (op=%v k=%s n=%d)",
-						kv.me, msg.CommandIndex, msg.CommandTerm, op.Operation, op.Key, op.ReqId)
-					DPrintf(dApply, "S[%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (index=%d) (term=%d) (data=%v)",
-						kv.me, op.Id, op.Operation, op.ReqId, op.Key, msg.CommandIndex, msg.CommandTerm, kv.data)
-				} else {
-					DPrintf(dReceived, "S[%d] (index=%d) (term=%d) (op=%v k=%s v=%s n=%d)",
-						kv.me, msg.CommandIndex, msg.CommandTerm, op.Operation, op.Key, op.Value, op.ReqId)
-					DPrintf(dApply, "S[%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d) (data=%v)",
-						kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm, kv.data)
-				}
+				// if op.Operation == "Get" {
+				// 	DPrintf(dReceived, "S[%d] (index=%d) (term=%d) (op=%v k=%s n=%d)",
+				// 		kv.me, msg.CommandIndex, msg.CommandTerm, op.Operation, op.Key, op.ReqId)
+				// 	DPrintf(dApply, "S[%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (index=%d) (term=%d) (data=%v)",
+				// 		kv.me, op.Id, op.Operation, op.ReqId, op.Key, msg.CommandIndex, msg.CommandTerm, kv.data)
+				// } else {
+				// 	DPrintf(dReceived, "S[%d] (index=%d) (term=%d) (op=%v k=%s v=%s n=%d)",
+				// 		kv.me, msg.CommandIndex, msg.CommandTerm, op.Operation, op.Key, op.Value, op.ReqId)
+				// 	DPrintf(dApply, "S[%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d) (data=%v)",
+				// 		kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm, kv.data)
+				// }
 
 				// Make sure this is monotonic?
 				// if kv.index > msg.CommandIndex {
@@ -193,17 +201,67 @@ func (kv *ShardKV) applier() {
 				// }
 				kv.index = msg.CommandIndex
 
-				if op.ReqId > kv.duplicate[op.Id] {
-					if op.Operation == "Put" {
-						kv.data[op.Key] = op.Value
-					} else if op.Operation == "Append" {
-						if val, ok := kv.data[op.Key]; ok {
-							kv.data[op.Key] = val + op.Value
-						} else {
-							kv.data[op.Key] = op.Value
+				if op.Operation == "Reconfig" {
+					gidsMap := make(map[int]bool)
+					for i, gid := range kv.config.Shards {
+						if op.Config.Shards[i] == kv.me && gid != kv.me {
+							gidsMap[gid] = true
 						}
 					}
-					kv.duplicate[op.Id] = op.ReqId
+					gidsToContact := make([]int, 0)
+					for gid := range gidsMap {
+						gidsToContact = append(gidsToContact, gid)
+					}
+					sort.Ints(gidsToContact)
+
+					for gid := range gidsToContact {
+						// Create clerk for each gid
+						servers := kv.config.Groups[gid]
+						args := TransferArgs{}
+						for si := 0; si < len(servers); si++ {
+							srv := kv.make_end(servers[si])
+							var reply TransferReply
+							kv.mu.Unlock()
+							ok := srv.Call("ShardKV.Transfer", &args, &reply)
+							kv.mu.Lock()
+							if ok && (reply.Err == OK || reply.Err == ErrTransfer) {
+								for k, v := range reply.Data {
+									if op.Config.Shards[key2shard(k)] == kv.gid && kv.config.Shards[key2shard(k)] != kv.gid {
+										kv.curData()[k] = v
+									}
+								}
+							}
+							if ok && (reply.Err == ErrWrongGroup) {
+								// Save data?
+							}
+							// ... not ok, or ErrWrongLeader
+						}
+					}
+					kv.config = op.Config
+
+					// Sort the GIDs
+					// Send an RPC to each GID
+
+				} else {
+					if op.ReqId > kv.duplicate[op.Id] {
+						shard := key2shard(op.Key)
+						if kv.config.Shards[shard] == kv.gid {
+							if op.Operation == "Put" {
+								kv.curData()[op.Key] = op.Value
+							} else if op.Operation == "Append" {
+								if val, ok := kv.curData()[op.Key]; ok {
+									kv.curData()[op.Key] = val + op.Value
+								} else {
+									kv.curData()[op.Key] = op.Value
+								}
+							}
+							kv.duplicate[op.Id] = op.ReqId // Does this line need to go outside?
+							// 	// GID responsible for shard
+						} else {
+							// Somehow convey that we are not responsible
+
+						}
+					}
 				}
 				if op.Operation == "Get" {
 					DPrintf(dApply, "S[%d] AFTER (C=%d) (op=%s) (reqId=%d) (K=%s) (index=%d) (term=%d) (data=%v)",
@@ -221,7 +279,7 @@ func (kv *ShardKV) applier() {
 			DPrintf(dReceived, "S[%d] SNAPSHOT (index=%d) (term=%d)", kv.me, msg.SnapshotIndex, msg.SnapshotTerm)
 			r := bytes.NewBuffer(msg.Snapshot)
 			d := labgob.NewDecoder(r)
-			var data map[string]string
+			var data []map[string]string
 			var duplicate map[int64]int
 			var index int
 			if d.Decode(&data) != nil || d.Decode(&duplicate) != nil || d.Decode(&index) != nil {
@@ -251,6 +309,7 @@ func (kv *ShardKV) snapshot() {
 				e.Encode(kv.data)
 				e.Encode(kv.duplicate)
 				e.Encode(kv.index)
+				// May need to encode config, gid, clerks?
 				snapshot := w.Bytes()
 				kv.rf.Snapshot(kv.index, snapshot)
 			}
@@ -260,15 +319,83 @@ func (kv *ShardKV) snapshot() {
 	}
 }
 
+func (kv *ShardKV) Transfer(args *TransferArgs, reply *TransferReply) {
+	kv.mu.Lock()
+	data := make(map[string]string)
+	for k, v := range kv.data[args.ConfigNum] {
+		data[k] = v
+	}
+	reply.Data = data
+	kv.mu.Unlock()
+}
+
+func (kv *ShardKV) reconfigure(term int) {
+	// Commit to raft
+	kv.mu.Unlock()
+	for !kv.killed() {
+		kv.mu.Lock()
+		if len(kv.unconfigured) > 0 {
+			op := Op{Operation: "Configure", Id: -1, ReqId: kv.unconfigured[0].Num, Config: kv.unconfigured[0]}
+			err := kv.Request(op)
+			kv.mu.Unlock()
+			if err == OK {
+				kv.mu.Lock()
+				kv.unconfigured = kv.unconfigured[1:]
+				kv.mu.Unlock()
+				continue
+			} else {
+				// Do again?
+			}
+		}
+		kv.mu.Unlock()
+		time.Sleep(10)
+	}
+
+}
+
 func (kv *ShardKV) poll() {
+	term := 0
+	for !kv.killed() {
+		kv.mu.Lock()
+		cur_term, isLeader := kv.rf.GetState()
+		if cur_term > term || !isLeader {
+			kv.unconfigured = make([]shardctrler.Config, 0)
+			term = cur_term
+			kv.mu.Unlock()
+			continue
+		}
+		nextConfigNum := -1
+		if len(kv.unconfigured) == 0 {
+			nextConfigNum = kv.config.Num + 1
+		} else {
+			nextConfigNum = kv.unconfigured[len(kv.unconfigured)-1].Num + 1
+		}
+		kv.unconfigured = append(kv.unconfigured, kv.shardclerk.Query(nextConfigNum))
+		kv.mu.Unlock()
+
+		time.Sleep(100 * time.Millisecond)
+	}
+	// send to raft here
+	// wait to see if configure number is greater before deleting from unconfigured list
+	// cur_term := 0
+	// for !kv.killed() {
+	// 	term, isLeader := kv.rf.GetState()
+	// 	if isLeader && cur_term < term {
+	// 		kv.mu.Lock()
+	// 		kv.unconfigured = make([]shardctrler.Config, 0)
+	// 		kv.mu.Unlock()
+	// 		go kv.newConfigs(term)
+	// 		go kv.reconfigure(term)
+	// 	}
+	// 	cur_term = term
+	// 	time.Sleep(100)
+	// }
 	for !kv.killed() {
 		kv.mu.Lock()
 		kv.config = kv.shardclerk.Query(-1)
-		// fmt.Printf("S[%d] (config=%v)", kv.me, kv.config)
 		kv.mu.Unlock()
 		time.Sleep(100 * time.Millisecond)
 	}
-
 }
 
 //
@@ -280,8 +407,7 @@ func (kv *ShardKV) poll() {
 func (kv *ShardKV) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
-	fmt.Printf("S[%d-%d] killed\n", kv.gid, kv.me)
-	// Your code here, if desired.
+	DPrintf(dKilled, "S[%d-%d] killed\n", kv.gid, kv.me)
 }
 func (kv *ShardKV) killed() bool {
 	z := atomic.LoadInt32(&kv.dead)
@@ -327,7 +453,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.make_end = make_end
 	kv.gid = gid
 	kv.ctrlers = ctrlers
-	kv.shardclerk = shardctrler.MakeClerk(ctrlers)
+	kv.shardclerk = shardctrler.MakeClerk(kv.ctrlers)
 
 	// Your initialization code here.
 
@@ -337,9 +463,12 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
-	kv.data = make(map[string]string)
+	kv.data = make([]map[string]string, 0)
+	kv.data = append(kv.data, make(map[string]string))
 	kv.index = 0
 	kv.duplicate = make(map[int64]int)
+	kv.config = shardctrler.Config{Num: 0}
+	kv.unconfigured = make([]shardctrler.Config, 0)
 
 	// You may need initialization code here.
 	go kv.applier()

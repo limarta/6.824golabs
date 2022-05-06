@@ -14,6 +14,7 @@ const (
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongGroup  = "ErrWrongGroup"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrTransfer    = "ErrTransfer"
 )
 
 type Err string
@@ -45,4 +46,13 @@ type GetArgs struct {
 type GetReply struct {
 	Err   Err
 	Value string
+}
+
+type TransferArgs struct {
+	ConfigNum int
+}
+
+type TransferReply struct {
+	Err  Err
+	Data map[string]string
 }
