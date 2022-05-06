@@ -263,6 +263,7 @@ func (kv *ShardKV) applier() {
 					// }
 					// wg.Wait()
 					kv.config = op.Config
+					kv.curDup()[op.Id] = op.ReqId // Does this line need to go outside?
 					DPrintf(dApply, "S[%d-%d] (newConfig=%v)", kv.gid, kv.me, kv.config)
 				} else {
 					if op.ReqId > kv.curDup()[op.Id] {
