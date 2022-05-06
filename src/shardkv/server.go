@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -45,6 +44,7 @@ const (
 	dGet            logTopic = "GET"
 	dApply          logTopic = "APPLY"
 	dPutAppend      logTopic = "PUTAPPEND"
+	dConfigure      logTopic = "CONFIGURE"
 	dDecode         logTopic = "DECODE"
 	dSnap           logTopic = "SNAP"
 	dApplySnap      logTopic = "APPLYSNAP"
@@ -53,6 +53,8 @@ const (
 	dReceived       logTopic = "RECEIVED"
 	dSkip           logTopic = "SKIP"
 	dKilled         logTopic = "KILLED"
+	dPoll           logTopic = "POLL"
+	dReconfig       logTopic = "RECONFIG"
 )
 const Debug = false
 
@@ -110,15 +112,20 @@ func (kv *ShardKV) Request(cmd Op) Err {
 	index, term, isLeader := kv.rf.Start(cmd)
 
 	if isLeader {
+		fmt.Println(cmd)
 		if cmd.Operation == "Get" {
-			DPrintf(dGet, "S[%d] (isLeader=%t) (C=%d) (reqId=%d) (key=%s) (index=%d) (term=%d)",
-				kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, index, term)
+			DPrintf(dGet, "S[%d-%d] (isLeader=%t) (C=%d) (reqId=%d) (key=%s) (index=%d) (term=%d)",
+				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, index, term)
 		} else if cmd.Operation == "Put" {
-			DPrintf(dPut, "S[%d]  (isLeader=%t) (C=%d) (reqId=%d) (key=%s) (value=%s) (index=%d) (term=%d)",
-				kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term)
+			DPrintf(dPut, "S[%d-%d]  (isLeader=%t) (C=%d) (reqId=%d) (key=%s) (value=%s) (index=%d) (term=%d)",
+				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term)
 		} else if cmd.Operation == "Append" {
-			DPrintf(dAppend, "S[%d] (isLeader=%t) (C=%d) (reqId=%d) (key=%s) (value=%s) (index=%d) (term=%d)",
-				kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term)
+			DPrintf(dAppend, "S[%d-%d] (isLeader=%t) (C=%d) (reqId=%d) (key=%s) (value=%s) (index=%d) (term=%d)",
+				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term)
+		} else if cmd.Operation == "Configure" {
+			DPrintf(dConfigure, "S[%d-%d] (isLeader=%t) (C=%d) (reqId=%d) (config=%v) (index=%d) (term=%d)",
+				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Config, index, term)
+
 		}
 
 		start := time.Now()
@@ -219,7 +226,8 @@ func (kv *ShardKV) applier() {
 				// }
 				kv.index = msg.CommandIndex
 
-				if op.Operation == "Reconfig" {
+				if op.Operation == "Configure" {
+					DPrintf(dApply, "[S%d-%d] CONFIGURE (config=%v)", kv.gid, kv.me, op.Config)
 					mapCopy := make(map[string]string)
 					for k, v := range kv.curData() {
 						mapCopy[k] = v
@@ -231,6 +239,7 @@ func (kv *ShardKV) applier() {
 					}
 					kv.data = append(kv.data, mapCopy)
 					kv.duplicate = append(kv.duplicate, dupCopy)
+					DPrintf(dApply, "S[%d-%d] (copy data=%v) (copy dup=%v)", kv.gid, kv.me, kv.data, kv.duplicate)
 
 					gidsMap := make(map[int]bool)
 					for i, gid := range kv.config.Shards {
@@ -238,22 +247,23 @@ func (kv *ShardKV) applier() {
 							gidsMap[gid] = true
 						}
 					}
-					gidsToContact := make([]int, 0)
-					for gid := range gidsMap {
-						gidsToContact = append(gidsToContact, gid)
-					}
-					sort.Ints(gidsToContact)
+					// gidsToContact := make([]int, 0)
+					// for gid := range gidsMap {
+					// 	gidsToContact = append(gidsToContact, gid)
+					// }
+					// sort.Ints(gidsToContact)
 
-					var wg sync.WaitGroup
-					for gid := range gidsToContact {
-						wg.Add(1)
-						go func(g int, o Op) {
-							kv.requestTransfer(g, o)
-						}(gid, op)
-						// Create clerk for each gid
-					}
-					wg.Wait()
+					// var wg sync.WaitGroup
+					// for gid := range gidsToContact {
+					// 	wg.Add(1)
+					// 	go func(g int, o Op) {
+					// 		kv.requestTransfer(g, o)
+					// 	}(gid, op)
+					// 	// Create clerk for each gid
+					// }
+					// wg.Wait()
 					kv.config = op.Config
+					DPrintf(dApply, "S[%d-%d] (newConfig=%v)", kv.gid, kv.me, kv.config)
 				} else {
 					if op.ReqId > kv.curDup()[op.Id] {
 						shard := key2shard(op.Key)
@@ -389,18 +399,22 @@ func (kv *ShardKV) reconfigure() {
 	for !kv.killed() {
 		kv.mu.Lock()
 		if len(kv.unconfigured) > 0 {
+			DPrintf(dReconfig, "[S%d-%d] (unconfigured=%v)", kv.gid, kv.me, kv.unconfigured)
 			op := Op{Operation: "Configure", Id: -1, ReqId: kv.unconfigured[0].Num, Config: kv.unconfigured[0]}
-			err := kv.Request(op)
+			DPrintf(dReconfig, "[S%d-%d] (op=%v)", kv.gid, kv.me, op)
 			kv.mu.Unlock()
+			err := kv.Request(op)
 			// Check whether we are still leader at this point
 			if err == OK {
 				kv.mu.Lock()
+				DPrintf(dReconfig, "[S%d-%d] (curConfig=%v)", kv.gid, kv.me, kv.config)
 				kv.unconfigured = kv.unconfigured[1:]
 				kv.mu.Unlock()
-				continue
 			} else {
+				DPrintf(dReconfig, "HElp")
 				// Do again?
 			}
+			continue
 		}
 		kv.mu.Unlock()
 		time.Sleep(10 * time.Millisecond)
@@ -418,13 +432,19 @@ func (kv *ShardKV) poll() {
 			kv.mu.Unlock()
 			continue
 		}
+		DPrintf(dPoll, "S[%d-%d] (curConfig=%v) (isLeader=%t)", kv.gid, kv.me, kv.config, isLeader)
 		nextConfigNum := -1
 		if len(kv.unconfigured) == 0 {
 			nextConfigNum = kv.config.Num + 1
 		} else {
 			nextConfigNum = kv.unconfigured[len(kv.unconfigured)-1].Num + 1
 		}
-		kv.unconfigured = append(kv.unconfigured, kv.shardclerk.Query(nextConfigNum))
+		DPrintf(dPoll, "S[%d-%d] (nextConfigNum=%d)", kv.gid, kv.me, nextConfigNum)
+		newConfig := kv.shardclerk.Query(nextConfigNum)
+		if newConfig.Num == nextConfigNum {
+			kv.unconfigured = append(kv.unconfigured, newConfig)
+		}
+		DPrintf(dPoll, "S[%d-%d] (unconfigured=%v)", kv.gid, kv.me, kv.unconfigured)
 		kv.mu.Unlock()
 
 		time.Sleep(100 * time.Millisecond)
@@ -498,8 +518,9 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	kv.data = make([]map[string]string, 0)
 	kv.data = append(kv.data, make(map[string]string))
-	kv.index = 0
 	kv.duplicate = make([](map[int64]int), 0)
+	kv.duplicate = append(kv.duplicate, make(map[int64]int))
+	kv.index = 0
 	kv.config = shardctrler.Config{Num: 0}
 	kv.unconfigured = make([]shardctrler.Config, 0)
 
