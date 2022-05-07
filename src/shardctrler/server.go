@@ -277,6 +277,7 @@ func (sc *ShardCtrler) applier() {
 				sc.mu.Unlock()
 			}
 		}
+		time.Sleep(1 * time.Millisecond)
 	}
 }
 
