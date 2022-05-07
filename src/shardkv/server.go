@@ -56,6 +56,7 @@ const (
 	dPoll           logTopic = "POLL"
 	dReconfig       logTopic = "RECONFIG"
 	dRequest        logTopic = "REQUEST"
+	dTransfer       logTopic = "TRANSFER"
 )
 const Debug = false
 
@@ -249,20 +250,26 @@ func (kv *ShardKV) applier() {
 
 						gidsMap := make(map[int]bool)
 						for i, gid := range kv.config.Shards {
-							if op.Config.Shards[i] == kv.me && gid != kv.me {
+							DPrintf(dApply, "S[%d-%d] (op.Config.Shards[%d]=%d) (gid=%d)", kv.gid, kv.me, i, op.Config.Shards[i], gid)
+							if op.Config.Shards[i] == kv.gid && gid != op.Config.Shards[i] && gid != 0 {
+								DPrintf(dApply, "S[%d-%d] (op.Config.Shards[%d]=%d) (gid=%d) (kv.config.Shards[%d]=%d)",
+									kv.gid, kv.me, i, op.Config.Shards[i], gid, i, kv.config.Shards[i])
 								gidsMap[gid] = true
 							}
 						}
 
-						// var wg sync.WaitGroup
-						// for gid := range gidsMap {
-						// 	wg.Add(1)
-						// 	go func(g int, o Op) {
-						// 		kv.requestTransfer(g, o)
-						// 	}(gid, op)
-						// 	// Create clerk for each gid
-						// }
-						// wg.Wait()
+						var wg sync.WaitGroup
+						DPrintf(dApply, "S[%d-%d] (gidsToRPC=%v)", kv.gid, kv.me, gidsMap)
+						for gid := range gidsMap {
+							wg.Add(1)
+							DPrintf(dTransfer, "S[%d-%d] RPCing (gid=%d) (op=%v)", kv.gid, kv.me, gid, op)
+							go func(g int, o Op) {
+								defer wg.Done()
+								kv.requestTransfer(g, o)
+							}(gid, op)
+							// Create clerk for each gid
+						}
+						wg.Wait()
 						kv.config = op.Config
 					} else {
 						shard := key2shard(op.Key)
@@ -324,6 +331,7 @@ func (kv *ShardKV) applier() {
 
 func (kv *ShardKV) requestTransfer(gid int, op Op) {
 	servers := kv.config.Groups[gid]
+	DPrintf(dTransfer, "S[%d-%d] RPCing (gid=%d) (server=%v) (op=%v)", kv.gid, kv.me, gid, servers, op)
 	args := TransferArgs{op.Config.Num}
 	transferred := false
 	for !kv.killed() && !transferred {
@@ -335,6 +343,8 @@ func (kv *ShardKV) requestTransfer(gid int, op Op) {
 			kv.mu.Lock()
 			if ok {
 				if reply.Err == OK {
+					DPrintf(dTransfer, "S[%d-%d] RECEIVED (configNum=%d) (newData=%v) (newDup=%v)",
+						kv.gid, kv.me, args.ConfigNum, reply.Data, reply.Duplicate)
 					for k, v := range reply.Data {
 						if op.Config.Shards[key2shard(k)] == kv.gid && kv.config.Shards[key2shard(k)] != kv.gid {
 							kv.curData()[k] = v
@@ -350,6 +360,7 @@ func (kv *ShardKV) requestTransfer(gid int, op Op) {
 				}
 			}
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 }
@@ -380,7 +391,8 @@ func (kv *ShardKV) snapshot() {
 func (kv *ShardKV) Transfer(args *TransferArgs, reply *TransferReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	if args.ConfigNum > len(kv.data) {
+	if args.ConfigNum+1 > len(kv.data) {
+		DPrintf(dTransfer, "S[%d-%d] does NOT have (configNum=%d)", kv.gid, kv.me, args.ConfigNum)
 		reply.Err = ErrTransfer
 		return
 	}

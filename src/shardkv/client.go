@@ -10,6 +10,7 @@ package shardkv
 
 import (
 	"crypto/rand"
+	"fmt"
 	"math/big"
 	"time"
 
@@ -86,7 +87,7 @@ func (ck *Clerk) Get(key string) string {
 		ck.config = ck.sm.Query(-1)
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
-		// fmt.Printf("C[%d] new CONFIG (config=%v) (shard=%d) (gid=%d)\n", ck.id, ck.config, shard, gid)
+		fmt.Printf("C[%d] new CONFIG (config=%v) (shard=%d) (gid=%d)\n", ck.id, ck.config, shard, gid)
 
 		if servers, ok := ck.config.Groups[gid]; ok {
 			// fmt.Printf("C[%d] try (servers=%v)\n", ck.id, servers)
@@ -95,16 +96,19 @@ func (ck *Clerk) Get(key string) string {
 				srv := ck.make_end(servers[si])
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
-				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
-					// fmt.Println("FINISHED GET")
+				if ok && (reply.Err == OK) {
+					fmt.Println("FINISHED GET")
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
+					ck.reqId += 1
+					args.ReqId = ck.reqId
+					fmt.Printf("C[%d] received ErrWrongGroup\n", ck.id)
 					break
 				}
-				// ... not ok, or ErrWrongLeader
 			}
 		}
+		fmt.Printf("C[%d] received ErrWrongLEADER\n", ck.id)
 		time.Sleep(100 * time.Millisecond)
 		// ask controler for the latest configuration.
 	}
@@ -124,15 +128,13 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	ck.reqId += 1
 	args.Id = ck.id
 	args.ReqId = ck.reqId
-	// fmt.Printf("C[%d] PUT (args=%v)\n", ck.id, args)
+	fmt.Printf("C[%d] PUT (args=%v)\n", ck.id, args)
 
 	for {
 		ck.config = ck.sm.Query(-1)
-		// fmt.Printf("C[%d] new CONFIG (config=%v)\n", ck.id, ck.config)
+		fmt.Printf("C[%d] new CONFIG (config=%v)\n", ck.id, ck.config)
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
-		// fmt.Printf("C[%d] (shard %v) (gid=%d)\n", ck.id, shard, gid)
-		// fmt.Printf("C[%d] (shards=%v) (config=%v)\n", ck.id, ck.config.Shards, ck.config.Groups)
 		if servers, ok := ck.config.Groups[gid]; ok {
 			// fmt.Printf("C[%d] found config (config[gid]=%v)\n", ck.id, servers)
 			for si := 0; si < len(servers); si++ {
@@ -140,13 +142,17 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
 				if ok && reply.Err == OK {
-					// fmt.Println("FINISHED PUT")
+					fmt.Println("FINISHED PUT")
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
+					fmt.Printf("C[%d] received ErrWrongGroup (op=%v) (reqId=%d) (K=%s) (V=%s)\n", ck.id, op, args.ReqId, key, value)
+					ck.reqId += 1
+					args.ReqId = ck.reqId
 					break
 				}
 				// ... not ok, or ErrWrongLeader
+				fmt.Printf("C[%d] received ErrWrongLEADER (op=%v) (reqId=%d) (K=%s) (V=%s)\n", ck.id, op, args.ReqId, key, value)
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
