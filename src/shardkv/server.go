@@ -95,8 +95,6 @@ type ShardKV struct {
 	duplicate    [](map[int64]int)
 	index        int
 	unconfigured []shardctrler.Config
-
-	// Your definitions here.
 }
 
 func (kv *ShardKV) Request(cmd Op) Err {
@@ -258,18 +256,20 @@ func (kv *ShardKV) applier() {
 							}
 						}
 
-						var wg sync.WaitGroup
+						// var wg sync.WaitGroup
 						DPrintf(dApply, "S[%d-%d] (gidsToRPC=%v)", kv.gid, kv.me, gidsMap)
 						for gid := range gidsMap {
-							wg.Add(1)
+							// wg.Add(1)
 							DPrintf(dTransfer, "S[%d-%d] RPCing (gid=%d) (op=%v)", kv.gid, kv.me, gid, op)
-							go func(g int, o Op) {
-								defer wg.Done()
-								kv.requestTransfer(g, o)
-							}(gid, op)
+							// go func(g int, o Op) {
+							// 	defer wg.Done()
+							// kv.requestTransfer(g, o)
+							// }(gid, op)
+							kv.requestTransfer(gid, op)
+
 							// Create clerk for each gid
 						}
-						wg.Wait()
+						// wg.Wait()
 						kv.config = op.Config
 					} else {
 						shard := key2shard(op.Key)
@@ -325,7 +325,7 @@ func (kv *ShardKV) applier() {
 
 			kv.mu.Unlock()
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(1 * time.Millisecond)
 	}
 }
 
@@ -360,7 +360,7 @@ func (kv *ShardKV) requestTransfer(gid int, op Op) {
 				}
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(1 * time.Millisecond) // Problematic
 	}
 
 }
@@ -526,7 +526,6 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// Your initialization code here.
 
 	// Use something like this to talk to the shardctrler:
-	// kv.mck = shardctrler.MakeClerk(kv.ctrlers)
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
