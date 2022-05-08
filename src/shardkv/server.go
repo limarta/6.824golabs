@@ -232,44 +232,44 @@ func (kv *ShardKV) applier() {
 				kv.index = msg.CommandIndex
 				if op.ReqId > kv.curDup()[op.Id] {
 					if op.Operation == "Configure" {
-						DPrintf(dApply, "S[%d-%d] CONFIGURE (config=%v) (data=%v) (dup=%v)", kv.gid, kv.me, op.Config, kv.data, kv.duplicate)
-						mapCopy := make(map[string]string)
-						for k, v := range kv.curData() {
-							mapCopy[k] = v
-						}
-						dupCopy := make(map[int64]int)
+						// DPrintf(dApply, "S[%d-%d] CONFIGURE (config=%v) (data=%v) (dup=%v)", kv.gid, kv.me, op.Config, kv.data, kv.duplicate)
+						// mapCopy := make(map[string]string)
+						// for k, v := range kv.curData() {
+						// 	mapCopy[k] = v
+						// }
+						// dupCopy := make(map[int64]int)
 
-						for k, v := range kv.curDup() {
-							dupCopy[k] = v
-						}
-						kv.data = append(kv.data, mapCopy)
-						kv.duplicate = append(kv.duplicate, dupCopy)
-						// DPrintf(dApply, "S[%d-%d] (copy data=%v) (copy dup=%v)", kv.gid, kv.me, kv.data, kv.duplicate)
+						// for k, v := range kv.curDup() {
+						// 	dupCopy[k] = v
+						// }
+						// kv.data = append(kv.data, mapCopy)
+						// kv.duplicate = append(kv.duplicate, dupCopy)
+						// // DPrintf(dApply, "S[%d-%d] (copy data=%v) (copy dup=%v)", kv.gid, kv.me, kv.data, kv.duplicate)
 
-						gidsMap := make(map[int]bool)
-						for i, gid := range kv.config.Shards {
-							DPrintf(dApply, "S[%d-%d] (op.Config.Shards[%d]=%d) (gid=%d)", kv.gid, kv.me, i, op.Config.Shards[i], gid)
-							if op.Config.Shards[i] == kv.gid && gid != op.Config.Shards[i] && gid != 0 {
-								DPrintf(dApply, "S[%d-%d] (op.Config.Shards[%d]=%d) (gid=%d) (kv.config.Shards[%d]=%d)",
-									kv.gid, kv.me, i, op.Config.Shards[i], gid, i, kv.config.Shards[i])
-								gidsMap[gid] = true
-							}
-						}
+						// gidsMap := make(map[int]bool)
+						// for i, gid := range kv.config.Shards {
+						// 	DPrintf(dApply, "S[%d-%d] (op.Config.Shards[%d]=%d) (gid=%d)", kv.gid, kv.me, i, op.Config.Shards[i], gid)
+						// 	if op.Config.Shards[i] == kv.gid && gid != op.Config.Shards[i] && gid != 0 {
+						// 		DPrintf(dApply, "S[%d-%d] (op.Config.Shards[%d]=%d) (gid=%d) (kv.config.Shards[%d]=%d)",
+						// 			kv.gid, kv.me, i, op.Config.Shards[i], gid, i, kv.config.Shards[i])
+						// 		gidsMap[gid] = true
+						// 	}
+						// }
 
-						// var wg sync.WaitGroup
-						DPrintf(dApply, "S[%d-%d] (gidsToRPC=%v)", kv.gid, kv.me, gidsMap)
-						for gid := range gidsMap {
-							// wg.Add(1)
-							DPrintf(dTransfer, "S[%d-%d] RPCing (gid=%d) (op=%v)", kv.gid, kv.me, gid, op)
-							// go func(g int, o Op) {
-							// 	defer wg.Done()
-							// kv.requestTransfer(g, o)
-							// }(gid, op)
-							kv.requestTransfer(gid, op)
+						// // var wg sync.WaitGroup
+						// DPrintf(dApply, "S[%d-%d] (gidsToRPC=%v)", kv.gid, kv.me, gidsMap)
+						// for gid := range gidsMap {
+						// 	// wg.Add(1)
+						// 	DPrintf(dTransfer, "S[%d-%d] RPCing (gid=%d) (op=%v)", kv.gid, kv.me, gid, op)
+						// 	// go func(g int, o Op) {
+						// 	// 	defer wg.Done()
+						// 	// kv.requestTransfer(g, o)
+						// 	// }(gid, op)
+						// 	kv.requestTransfer(gid, op)
 
-							// Create clerk for each gid
-						}
-						// wg.Wait()
+						// 	// Create clerk for each gid
+						// }
+						// // wg.Wait()
 						kv.config = op.Config
 					} else {
 						shard := key2shard(op.Key)
@@ -433,7 +433,7 @@ func (kv *ShardKV) reconfigure() {
 			continue
 		}
 		kv.mu.Unlock()
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -449,15 +449,13 @@ func (kv *ShardKV) poll() {
 			continue
 		}
 		DPrintf(dPoll, "S[%d-%d] (curConfig=%v) (isLeader=%t)", kv.gid, kv.me, kv.config, isLeader)
-		nextConfigNum := -1
-		if len(kv.unconfigured) == 0 {
-			nextConfigNum = kv.config.Num + 1
-		} else {
-			nextConfigNum = kv.unconfigured[len(kv.unconfigured)-1].Num + 1
-		}
-		newConfig := kv.shardclerk.Query(nextConfigNum)
-		if newConfig.Num == nextConfigNum {
-			kv.unconfigured = append(kv.unconfigured, newConfig)
+		latestConfig := kv.shardclerk.Query(-1)
+		if latestConfig.Num > kv.config.Num {
+			for i := kv.config.Num + 1; i <= latestConfig.Num; i++ {
+				newConfig := kv.shardclerk.Query(i)
+				DPrintf(dPoll, "S[%d-%d] (newConfig=%v)", kv.gid, kv.me, newConfig)
+				kv.unconfigured = append(kv.unconfigured, newConfig)
+			}
 		}
 		DPrintf(dPoll, "S[%d-%d] (unconfigured=%v)", kv.gid, kv.me, kv.unconfigured)
 		kv.mu.Unlock()

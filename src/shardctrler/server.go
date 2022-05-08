@@ -131,8 +131,19 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 		if !isLeader {
 			reply.WrongLeader = true
 		}
+		// fmt.Println("SKIPPED ", args.Num)
 		sc.mu.Unlock()
 		return
+	} else if args.Num == -1 {
+		reply.Config = sc.configs[len(sc.configs)-1]
+		_, isLeader := sc.rf.GetState()
+		if !isLeader {
+			reply.WrongLeader = true
+			sc.mu.Unlock()
+			return
+		}
+		// fmt.Println("SKIPPED ", args.Num)
+
 	}
 	sc.mu.Unlock()
 
