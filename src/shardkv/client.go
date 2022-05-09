@@ -87,7 +87,7 @@ func (ck *Clerk) Get(key string) string {
 		ck.config = ck.sm.Query(-1)
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
-		fmt.Printf("C[%d] new CONFIG (config=%v) (shard=%d) (gid=%d)\n", ck.id, ck.config, shard, gid)
+		// fmt.Printf("C[%d] new CONFIG (config=%v) (shard=%d) (gid=%d)\n", ck.id, ck.config, shard, gid)
 
 		if servers, ok := ck.config.Groups[gid]; ok {
 			// fmt.Printf("C[%d] try (servers=%v)\n", ck.id, servers)
@@ -101,14 +101,12 @@ func (ck *Clerk) Get(key string) string {
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
-					ck.reqId += 1
-					args.ReqId = ck.reqId
-					fmt.Printf("C[%d] received ErrWrongGroup\n", ck.id)
+					fmt.Printf("C[%d] ErrWrongGROUP\n", ck.id)
 					break
 				}
 			}
 		}
-		fmt.Printf("C[%d] received ErrWrongLEADER\n", ck.id)
+		fmt.Printf("C[%d] ErrWrongLEADER\n", ck.id)
 		time.Sleep(100 * time.Millisecond)
 		// ask controler for the latest configuration.
 	}
@@ -128,7 +126,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	ck.reqId += 1
 	args.Id = ck.id
 	args.ReqId = ck.reqId
-	fmt.Printf("C[%d] PUT (args=%v)\n", ck.id, args)
+	// fmt.Printf("C[%d] PUT (args=%v)\n", ck.id, args)
 
 	for {
 		ck.config = ck.sm.Query(-1)
