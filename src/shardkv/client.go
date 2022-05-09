@@ -145,8 +145,6 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				}
 				if ok && reply.Err == ErrWrongGroup {
 					fmt.Printf("C[%d] received ErrWrongGroup (op=%v) (reqId=%d) (K=%s) (V=%s)\n", ck.id, op, args.ReqId, key, value)
-					ck.reqId += 1
-					args.ReqId = ck.reqId
 					break
 				}
 				// ... not ok, or ErrWrongLeader
