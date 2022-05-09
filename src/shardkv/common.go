@@ -1,5 +1,7 @@
 package shardkv
 
+import "6.824/shardctrler"
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running Raft.
@@ -49,7 +51,8 @@ type GetReply struct {
 }
 
 type TransferArgs struct {
-	Shard int
+	Config shardctrler.Config
+	Shard  int
 }
 
 type TransferReply struct {

@@ -114,17 +114,17 @@ func (kv *ShardKV) Request(cmd Op) Err {
 
 	if isLeader {
 		if cmd.Operation == "Get" {
-			DPrintf(dRequest, "S[%d-%d] starting GET (isLeader=%t) (C=%d) (reqId=%d) (K=%s) (index=%d) (term=%d)",
-				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, index, term)
+			DPrintf(dRequest, "S[%d-%d] starting GET (isLeader=%t) (C=%d) (reqId=%d) (shard=%d) (K=%s) (index=%d) (term=%d)",
+				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Shard, cmd.Key, index, term)
 		} else if cmd.Operation == "Put" {
-			DPrintf(dRequest, "S[%d-%d]  starting PUT (isLeader=%t) (C=%d) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d)",
-				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term)
+			DPrintf(dRequest, "S[%d-%d]  starting PUT (isLeader=%t) (C=%d) (reqId=%d) (shard=%d) (K=%s) (V=%s) (index=%d) (term=%d)",
+				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Shard, cmd.Key, cmd.Value, index, term)
 		} else if cmd.Operation == "Append" {
-			DPrintf(dRequest, "S[%d-%d] starting APPEND (isLeader=%t) (C=%d) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d)",
-				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term)
+			DPrintf(dRequest, "S[%d-%d] starting APPEND (isLeader=%t) (C=%d) (reqId=%d) (shard=%d) (K=%s) (V=%s) (index=%d) (term=%d)",
+				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Shard, cmd.Key, cmd.Value, index, term)
 		} else if cmd.Operation == "Configure" {
-			DPrintf(dRequest, "S[%d-%d] starting CONFIGURE (isLeader=%t) (C=%d) (reqId=%d) (config=%v) (index=%d) (term=%d)",
-				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Config, index, term)
+			DPrintf(dRequest, "S[%d-%d] starting CONFIGURE (isLeader=%t) (C=%d) (reqId=%d) (shard=%d) (config=%v) (index=%d) (term=%d)",
+				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Shard, cmd.Config, index, term)
 
 		}
 
@@ -254,6 +254,10 @@ func (kv *ShardKV) applier() {
 					continue
 				}
 				if op.Operation == "Configure" {
+					if kv.config.Num+1 != op.Config.Num {
+						DPrintf(dApply, "S[%d-%d] CONFIGURE WRONG NUM (config=%v) (data=%v) (dup=%v)", kv.gid, kv.me, op.Config, kv.data, kv.duplicate)
+						panic("WRONG CONFIG NUM")
+					}
 					DPrintf(dApply, "S[%d-%d] CONFIGURE (config=%v) (data=%v) (dup=%v)", kv.gid, kv.me, op.Config, kv.data, kv.duplicate)
 					// mapCopy := make(map[string]string)
 					// for k, v := range kv.curData() {
@@ -287,7 +291,7 @@ func (kv *ShardKV) applier() {
 						// 	// 	defer wg.Done()
 						// 	// kv.requestTransfer(g, o)
 						// 	// }(gid, op)
-						kv.requestTransfer(shard, gid)
+						kv.requestTransfer(shard, gid, op.Config)
 
 						// 	// Create clerk for each gid
 					}
@@ -297,7 +301,8 @@ func (kv *ShardKV) applier() {
 				} else {
 					shard := key2shard(op.Key)
 					if kv.config.Shards[shard] == kv.gid {
-						DPrintf(dApply, "S[%d-%d] responsible (shard=%d) (shards=%v)", kv.gid, kv.me, shard, kv.config.Shards)
+						DPrintf(dApply, "S[%d-%d] responsible (op=%s) (shard=%d) (K=%s) (V=%s) (shards=%v)",
+							kv.gid, kv.me, op.Operation, shard, op.Key, op.Value, kv.config.Shards)
 						if op.Operation == "Put" {
 							kv.data[shard][op.Key] = op.Value
 						} else if op.Operation == "Append" {
@@ -314,11 +319,11 @@ func (kv *ShardKV) applier() {
 					}
 				}
 				if op.Operation == "Get" {
-					DPrintf(dApply, "S[%d-%d] AFTER (C=%d) (op=%s) (reqId=%d) (K=%s) (index=%d) (term=%d) (data=%v) (dup=%v)",
-						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, op.Key, msg.CommandIndex, msg.CommandTerm, kv.data, kv.duplicate)
+					DPrintf(dApply, "S[%d-%d] AFTER (C=%d) (op=%s) (reqId=%d) (shard=%d) (K=%s) (index=%d) (term=%d) (data=%v) (dup=%v)",
+						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, op.Shard, op.Key, msg.CommandIndex, msg.CommandTerm, kv.data, kv.duplicate)
 				} else if op.Operation == "Put" {
-					DPrintf(dApply, "S[%d-%d] AFTER (C=%d) (op=%s) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d) (data=%v) (dup=%v)",
-						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm, kv.data, kv.duplicate)
+					DPrintf(dApply, "S[%d-%d] AFTER (C=%d) (op=%s) (reqId=%d) (shard=%d) (K=%s) (V=%s) (index=%d) (term=%d) (data=%v) (dup=%v)",
+						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, op.Shard, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm, kv.data, kv.duplicate)
 				} else if op.Operation == "Configure" {
 					DPrintf(dApply, "S[%d-%d] AFTER (C=%d) (op=%s) (reqId=%d) (newConfig=%v) (newData=%v) (newDup=%v)",
 						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, kv.config, kv.data, kv.duplicate)
@@ -329,7 +334,7 @@ func (kv *ShardKV) applier() {
 			// Read snapshot = data + duplicate + index
 			// Set values
 			kv.mu.Lock()
-			DPrintf(dSnap, "S[%d] SNAPSHOT (index=%d) (term=%d)", kv.me, msg.SnapshotIndex, msg.SnapshotTerm)
+			DPrintf(dSnap, "S[%d-%d] SNAPSHOT (index=%d) (term=%d)", kv.gid, kv.me, msg.SnapshotIndex, msg.SnapshotTerm)
 			r := bytes.NewBuffer(msg.Snapshot)
 			d := labgob.NewDecoder(r)
 			var data map[int](map[string]string)
@@ -337,13 +342,13 @@ func (kv *ShardKV) applier() {
 			var index int
 			var config shardctrler.Config
 			if d.Decode(&data) != nil || d.Decode(&duplicate) != nil || d.Decode(&index) != nil || d.Decode(&config) != nil {
-				DPrintf(dDecode, "[S%d] ERROR", kv.me)
+				DPrintf(dDecode, "S[%d-%d] ERROR", kv.me)
 			} else {
 				kv.data = data
 				kv.duplicate = duplicate
 				kv.index = index
 				kv.config = config
-				DPrintf(dDecode, "[S%d] (index=%d) (data=%v) (dup=%v)", kv.me, index, data, duplicate)
+				DPrintf(dDecode, "S[%d-%d] (index=%d) (data=%v) (dup=%v)", kv.me, index, data, duplicate)
 			}
 
 			kv.mu.Unlock()
@@ -352,10 +357,10 @@ func (kv *ShardKV) applier() {
 	}
 }
 
-func (kv *ShardKV) requestTransfer(shard int, gid int) {
+func (kv *ShardKV) requestTransfer(shard int, gid int, config shardctrler.Config) {
 	servers := kv.config.Groups[gid]
 	DPrintf(dTransfer, "S[%d-%d] RPCing (gid=%d) (shard=%d) (server=%v) (op=%v)", kv.gid, kv.me, gid, shard, servers)
-	args := TransferArgs{Shard: shard}
+	args := TransferArgs{Shard: shard, Config: config}
 	transferred := false
 	for !kv.killed() && !transferred {
 		for si := 0; si < len(servers); si++ {
@@ -366,8 +371,8 @@ func (kv *ShardKV) requestTransfer(shard int, gid int) {
 			kv.mu.Lock()
 			if ok {
 				if reply.Err == OK {
-					DPrintf(dTransfer, "S[%d-%d] RECEIVED from (gid=%d) (shard=%d) (newData=%v) (newDup=%v)",
-						kv.gid, kv.me, gid, shard, reply.Data, reply.Duplicate)
+					DPrintf(dTransfer, "S[%d-%d] RECEIVED from S[%d-%d] (shard=%d) (newData=%v) (newDup=%v)",
+						kv.gid, kv.me, gid, si, shard, reply.Data, reply.Duplicate)
 					kv.data[shard] = reply.Data
 					kv.duplicate[shard] = reply.Duplicate
 					transferred = true
@@ -385,11 +390,11 @@ func (kv *ShardKV) requestTransfer(shard int, gid int) {
 func (kv *ShardKV) Transfer(args *TransferArgs, reply *TransferReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	// if args.ConfigNum > kv.config.Num {
-	// 	DPrintf(dTransfer, "S[%d-%d] does NOT have (configNum=%d)", kv.gid, kv.me, args.ConfigNum)
-	// 	reply.Err = ErrTransfer
-	// 	return
-	// }
+	if args.Config.Num > kv.config.Num {
+		DPrintf(dTransfer, "S[%d-%d] does NOT have (configNum=%d)", kv.gid, kv.me, args.Config.Num)
+		reply.Err = ErrTransfer
+		return
+	}
 	data := make(map[string]string)
 	duplicate := make(map[int64]int)
 	for k, v := range kv.data[args.Shard] {
@@ -410,7 +415,7 @@ func (kv *ShardKV) snapshot() {
 			kv.mu.Lock()
 
 			if kv.rf.RaftStateSize() >= kv.maxraftstate {
-				DPrintf(dSnap, "S[%d] (snapshot index=%d) (raftStateSize=%d) (max=%d)", kv.me, kv.index, kv.rf.RaftStateSize(), kv.maxraftstate)
+				DPrintf(dSnap, "S[%d-%d] (snapshot index=%d) (raftStateSize=%d) (max=%d)", kv.gid, kv.me, kv.index, kv.rf.RaftStateSize(), kv.maxraftstate)
 				// Snapshot = kv.data + kv.duplicate + index
 				w := new(bytes.Buffer)
 				e := labgob.NewEncoder(w)
