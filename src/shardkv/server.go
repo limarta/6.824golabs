@@ -165,7 +165,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		Shard:     key2shard(args.Key)}
 	kv.mu.Lock()
 	if kv.config.Shards[key2shard(cmd.Key)] != kv.gid {
-		DPrintf(dGet, "S[%d-%d] skipped get (op=%v)", kv.gid, kv.me, cmd)
+		DPrintf(dGet, "S[%d-%d] reject GET (true shard gid=%d) (op=%v)", kv.gid, kv.me, kv.config.Shards[key2shard(cmd.Key)], cmd)
 		kv.mu.Unlock()
 		reply.Err = ErrWrongGroup
 		return
@@ -255,22 +255,11 @@ func (kv *ShardKV) applier() {
 				}
 				if op.Operation == "Configure" {
 					if kv.config.Num+1 != op.Config.Num {
-						DPrintf(dApply, "S[%d-%d] CONFIGURE WRONG NUM (config=%v) (data=%v) (dup=%v)", kv.gid, kv.me, op.Config, kv.data, kv.duplicate)
-						panic("WRONG CONFIG NUM")
+						DPrintf(dApply, "S[%d-%d] CONFIGURE WRONG NUM (cur config=%v) (new config=%v) (dup=%v) (dup=%v)",
+							kv.gid, kv.me, kv.config, op.Config, kv.data, kv.duplicate)
+						panic("WRONG CONFIG NUM ")
 					}
-					DPrintf(dApply, "S[%d-%d] CONFIGURE (config=%v) (data=%v) (dup=%v)", kv.gid, kv.me, op.Config, kv.data, kv.duplicate)
-					// mapCopy := make(map[string]string)
-					// for k, v := range kv.curData() {
-					// 	mapCopy[k] = v
-					// }
-					// dupCopy := make(map[int64]int)
-
-					// for k, v := range kv.curDup() {
-					// 	dupCopy[k] = v
-					// }
-					// kv.data = append(kv.data, mapCopy)
-					// kv.duplicate = append(kv.duplicate, dupCopy)
-					// // DPrintf(dApply, "S[%d-%d] (copy data=%v) (copy dup=%v)", kv.gid, kv.me, kv.data, kv.duplicate)
+					DPrintf(dApply, "S[%d-%d] CONFIGURE (new config=%v) (cur config=%v) (data=%v) (dup=%v)", kv.gid, kv.me, op.Config, kv.config, kv.data, kv.duplicate)
 
 					shardsToFetch := make(map[int]int) // shard -> gid
 					for i, gid := range kv.config.Shards {
@@ -319,11 +308,11 @@ func (kv *ShardKV) applier() {
 					}
 				}
 				if op.Operation == "Get" {
-					DPrintf(dApply, "S[%d-%d] AFTER (C=%d) (op=%s) (reqId=%d) (shard=%d) (K=%s) (index=%d) (term=%d) (data=%v) (dup=%v)",
-						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, op.Shard, op.Key, msg.CommandIndex, msg.CommandTerm, kv.data, kv.duplicate)
+					DPrintf(dApply, "S[%d-%d] AFTER (C=%d) (op=%s) (reqId=%d) (curConfig=%v) (shard=%d) (K=%s) (index=%d) (term=%d) (data=%v) (dup=%v)",
+						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, kv.config, op.Shard, op.Key, msg.CommandIndex, msg.CommandTerm, kv.data, kv.duplicate)
 				} else if op.Operation == "Put" {
-					DPrintf(dApply, "S[%d-%d] AFTER (C=%d) (op=%s) (reqId=%d) (shard=%d) (K=%s) (V=%s) (index=%d) (term=%d) (data=%v) (dup=%v)",
-						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, op.Shard, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm, kv.data, kv.duplicate)
+					DPrintf(dApply, "S[%d-%d] AFTER (C=%d) (op=%s) (reqId=%d) (curConfig=%v) (shard=%d) (K=%s) (V=%s) (index=%d) (term=%d) (data=%v) (dup=%v)",
+						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, kv.config, op.Shard, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm, kv.data, kv.duplicate)
 				} else if op.Operation == "Configure" {
 					DPrintf(dApply, "S[%d-%d] AFTER (C=%d) (op=%s) (reqId=%d) (newConfig=%v) (newData=%v) (newDup=%v)",
 						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, kv.config, kv.data, kv.duplicate)
@@ -348,7 +337,7 @@ func (kv *ShardKV) applier() {
 				kv.duplicate = duplicate
 				kv.index = index
 				kv.config = config
-				DPrintf(dDecode, "S[%d-%d] (index=%d) (data=%v) (dup=%v)", kv.me, index, data, duplicate)
+				DPrintf(dDecode, "S[%d-%d] (index=%d) (data=%v) (dup=%v) (config=%v)", kv.gid, kv.me, index, data, duplicate, config)
 			}
 
 			kv.mu.Unlock()
@@ -359,7 +348,7 @@ func (kv *ShardKV) applier() {
 
 func (kv *ShardKV) requestTransfer(shard int, gid int, config shardctrler.Config) {
 	servers := kv.config.Groups[gid]
-	DPrintf(dTransfer, "S[%d-%d] RPCing (gid=%d) (shard=%d) (server=%v) (op=%v)", kv.gid, kv.me, gid, shard, servers)
+	DPrintf(dTransfer, "S[%d-%d] RPCing (gid=%d) (shard=%d) (server=%v) (config=%v)", kv.gid, kv.me, gid, shard, servers, config)
 	args := TransferArgs{Shard: shard, Config: config}
 	transferred := false
 	for !kv.killed() && !transferred {
@@ -433,37 +422,69 @@ func (kv *ShardKV) snapshot() {
 	}
 }
 
-func (kv *ShardKV) reconfigure() {
-	// Commit to raft
-	for !kv.killed() {
-		kv.mu.Lock()
-		// Check for leader?
-		if len(kv.unconfigured) > 0 {
-			DPrintf(dReconfig, "S[%d-%d] (unconfigured=%v)", kv.gid, kv.me, kv.unconfigured)
-			op := Op{Operation: "Configure",
-				Id:     -1,
-				ReqId:  kv.unconfigured[0].Num,
-				Config: kv.unconfigured[0],
-				Shard:  -1}
-			DPrintf(dReconfig, "S[%d-%d] (op=%v)", kv.gid, kv.me, op)
-			kv.mu.Unlock()
-			err := kv.Request(op)
-			// Check whether we are still leader at this point
-			if err == OK {
-				kv.mu.Lock()
-				DPrintf(dReconfig, "S[%d-%d] (curConfig=%v)", kv.gid, kv.me, kv.config)
-				kv.unconfigured = kv.unconfigured[1:]
-				kv.mu.Unlock()
-			} else {
-				DPrintf(dReconfig, "HElp")
-			}
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-		kv.mu.Unlock()
-		time.Sleep(100 * time.Millisecond)
-	}
-}
+// func (kv *ShardKV) reconfigure() {
+// 	// Commit to raft
+// 	for !kv.killed() {
+// 		kv.mu.Lock()
+// 		// Check for leader?
+// 		if len(kv.unconfigured) > 0 {
+// 			DPrintf(dReconfig, "S[%d-%d] (unconfigured=%v)", kv.gid, kv.me, kv.unconfigured)
+// 			op := Op{Operation: "Configure",
+// 				Id:     -1,
+// 				ReqId:  kv.unconfigured[0].Num,
+// 				Config: kv.unconfigured[0],
+// 				Shard:  -1}
+// 			DPrintf(dReconfig, "S[%d-%d] (op=%v)", kv.gid, kv.me, op)
+// 			kv.mu.Unlock()
+// 			err := kv.Request(op)
+// 			// Check whether we are still leader at this point
+// 			if err == OK {
+// 				kv.mu.Lock()
+// 				DPrintf(dReconfig, "S[%d-%d] (curConfig=%v)", kv.gid, kv.me, kv.config)
+// 				kv.unconfigured = kv.unconfigured[1:]
+// 				kv.mu.Unlock()
+// 			} else {
+// 				DPrintf(dReconfig, "HElp")
+// 			}
+// 			time.Sleep(100 * time.Millisecond)
+// 			continue
+// 		}
+// 		kv.mu.Unlock()
+// 		time.Sleep(100 * time.Millisecond)
+// 	}
+// }
+
+// func (kv *ShardKV) poll() {
+// 	term := 0
+// 	for !kv.killed() {
+// 		kv.mu.Lock()
+// 		cur_term, isLeader := kv.rf.GetState()
+// 		if cur_term > term || !isLeader {
+// 			kv.unconfigured = make([]shardctrler.Config, 0)
+// 			term = cur_term
+// 			kv.mu.Unlock()
+// 			time.Sleep(100 * time.Millisecond)
+// 			continue
+// 		}
+// 		DPrintf(dPoll, "S[%d-%d] (curConfig=%v) (isLeader=%t)", kv.gid, kv.me, kv.config, isLeader)
+// 		nextConfigNum := -1
+// 		if len(kv.unconfigured) == 0 {
+// 			nextConfigNum = kv.config.Num + 1
+// 		} else {
+// 			nextConfigNum = kv.unconfigured[len(kv.unconfigured)-1].Num + 1
+// 		}
+// 		kv.mu.Unlock()
+// 		newConfig := kv.shardclerk.Query(nextConfigNum)
+// 		kv.mu.Lock()
+// 		if newConfig.Num == nextConfigNum {
+// 			kv.unconfigured = append(kv.unconfigured, newConfig)
+// 		}
+// 		DPrintf(dPoll, "S[%d-%d] (unconfigured=%v)", kv.gid, kv.me, kv.unconfigured)
+// 		kv.mu.Unlock()
+
+// 		time.Sleep(100 * time.Millisecond)
+// 	}
+// }
 
 func (kv *ShardKV) poll() {
 	term := 0
@@ -471,30 +492,43 @@ func (kv *ShardKV) poll() {
 		kv.mu.Lock()
 		cur_term, isLeader := kv.rf.GetState()
 		if cur_term > term || !isLeader {
-			kv.unconfigured = make([]shardctrler.Config, 0)
 			term = cur_term
+			DPrintf(dPoll, "S[%d-%d] (curConfig=%v) (isLeader=%t)", kv.gid, kv.me, kv.config, isLeader)
 			kv.mu.Unlock()
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 		DPrintf(dPoll, "S[%d-%d] (curConfig=%v) (isLeader=%t)", kv.gid, kv.me, kv.config, isLeader)
-		nextConfigNum := -1
-		if len(kv.unconfigured) == 0 {
-			nextConfigNum = kv.config.Num + 1
-		} else {
-			nextConfigNum = kv.unconfigured[len(kv.unconfigured)-1].Num + 1
-		}
+		nextConfigNum := kv.config.Num + 1
 		kv.mu.Unlock()
 		newConfig := kv.shardclerk.Query(nextConfigNum)
 		kv.mu.Lock()
-		if newConfig.Num == nextConfigNum {
-			kv.unconfigured = append(kv.unconfigured, newConfig)
+		if newConfig.Num != nextConfigNum {
+			kv.mu.Unlock()
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
-		DPrintf(dPoll, "S[%d-%d] (unconfigured=%v)", kv.gid, kv.me, kv.unconfigured)
+		DPrintf(dPoll, "S[%d-%d] (unconfigured=%v)", kv.gid, kv.me, newConfig)
+		op := Op{Operation: "Configure",
+			Id:     -1,
+			ReqId:  nextConfigNum,
+			Config: newConfig,
+			Shard:  -1}
+		DPrintf(dPoll, "S[%d-%d] (op=%v)", kv.gid, kv.me, op)
 		kv.mu.Unlock()
-
+		err := kv.Request(op)
+		// Check whether we are still leader at this point
+		if err == OK {
+			kv.mu.Lock()
+			DPrintf(dPoll, "S[%d-%d] OK (curConfig=%v)", kv.gid, kv.me, kv.config)
+			kv.mu.Unlock()
+		} else {
+			DPrintf(dPoll, "HElp")
+			panic("Help! Polling!")
+		}
 		time.Sleep(100 * time.Millisecond)
 	}
+
 }
 
 //
@@ -579,7 +613,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	go kv.applier()
 	go kv.snapshot()
 	go kv.poll()
-	go kv.reconfigure()
+	// go kv.reconfigure()
 
 	return kv
 
