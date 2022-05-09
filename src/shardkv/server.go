@@ -96,7 +96,7 @@ type ShardKV struct {
 	dead         int32 // set by Kill()
 	duplicate    map[int](map[int64]int)
 	index        int
-	unconfigured []shardctrler.Config
+	noSnapshot   bool
 }
 
 func (kv *ShardKV) Request(cmd Op) Err {
@@ -275,20 +275,14 @@ func (kv *ShardKV) applier() {
 						}
 					}
 
-					// // var wg sync.WaitGroup
 					DPrintf(dApply, "S[%d-%d] (shardsToFetch=%v)", kv.gid, kv.me, shardsToFetch)
+					kv.noSnapshot = true
 					for shard, gid := range shardsToFetch {
-						// 	// wg.Add(1)
 						DPrintf(dTransfer, "S[%d-%d] RPCing (gid=%d) for (shard=%d) for (config=%v)", kv.gid, kv.me, gid, shard, op.Config)
-						// 	// go func(g int, o Op) {
-						// 	// 	defer wg.Done()
-						// 	// kv.requestTransfer(g, o)
-						// 	// }(gid, op)
 						kv.requestTransfer(shard, gid, op.Config)
-
-						// 	// Create clerk for each gid
 					}
-					// // wg.Wait()
+					kv.noSnapshot = false
+
 					kv.config = op.Config
 					kv.duplicate[op.Shard][op.Id] = op.ReqId // Does this line need to go outside? NO!!!!!!
 				} else {
@@ -384,7 +378,7 @@ func (kv *ShardKV) Transfer(args *TransferArgs, reply *TransferReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	if args.Config.Num > kv.config.Num {
-		DPrintf(dTransfer, "S[%d-%d] does NOT have (configNum=%d)", kv.gid, kv.me, args.Config.Num)
+		DPrintf(dTransfer, "S[%d-%d] does NOT have (configNum=%d) (shard=%v)", kv.gid, kv.me, args.Config.Num, args.Shard)
 		reply.Err = ErrTransfer
 		return
 	}
@@ -407,8 +401,9 @@ func (kv *ShardKV) snapshot() {
 		for !kv.killed() {
 			kv.mu.Lock()
 
-			if kv.rf.RaftStateSize() >= kv.maxraftstate {
-				DPrintf(dSnap, "S[%d-%d] (snapshot index=%d) (raftStateSize=%d) (max=%d)", kv.gid, kv.me, kv.index, kv.rf.RaftStateSize(), kv.maxraftstate)
+			if kv.rf.RaftStateSize() >= 2*kv.maxraftstate && !kv.noSnapshot {
+				DPrintf(dSnap, "S[%d-%d] (snapshot index=%d) (raftStateSize=%d) (max=%d) (data=%v) (duplicate=%v) (config=%v)",
+					kv.gid, kv.me, kv.index, kv.rf.RaftStateSize(), kv.maxraftstate, kv.data, kv.duplicate, kv.config)
 				// Snapshot = kv.data + kv.duplicate + index
 				w := new(bytes.Buffer)
 				e := labgob.NewEncoder(w)
@@ -425,70 +420,6 @@ func (kv *ShardKV) snapshot() {
 		}
 	}
 }
-
-// func (kv *ShardKV) reconfigure() {
-// 	// Commit to raft
-// 	for !kv.killed() {
-// 		kv.mu.Lock()
-// 		// Check for leader?
-// 		if len(kv.unconfigured) > 0 {
-// 			DPrintf(dReconfig, "S[%d-%d] (unconfigured=%v)", kv.gid, kv.me, kv.unconfigured)
-// 			op := Op{Operation: "Configure",
-// 				Id:     -1,
-// 				ReqId:  kv.unconfigured[0].Num,
-// 				Config: kv.unconfigured[0],
-// 				Shard:  -1}
-// 			DPrintf(dReconfig, "S[%d-%d] (op=%v)", kv.gid, kv.me, op)
-// 			kv.mu.Unlock()
-// 			err := kv.Request(op)
-// 			// Check whether we are still leader at this point
-// 			if err == OK {
-// 				kv.mu.Lock()
-// 				DPrintf(dReconfig, "S[%d-%d] (curConfig=%v)", kv.gid, kv.me, kv.config)
-// 				kv.unconfigured = kv.unconfigured[1:]
-// 				kv.mu.Unlock()
-// 			} else {
-// 				DPrintf(dReconfig, "HElp")
-// 			}
-// 			time.Sleep(100 * time.Millisecond)
-// 			continue
-// 		}
-// 		kv.mu.Unlock()
-// 		time.Sleep(100 * time.Millisecond)
-// 	}
-// }
-
-// func (kv *ShardKV) poll() {
-// 	term := 0
-// 	for !kv.killed() {
-// 		kv.mu.Lock()
-// 		cur_term, isLeader := kv.rf.GetState()
-// 		if cur_term > term || !isLeader {
-// 			kv.unconfigured = make([]shardctrler.Config, 0)
-// 			term = cur_term
-// 			kv.mu.Unlock()
-// 			time.Sleep(100 * time.Millisecond)
-// 			continue
-// 		}
-// 		DPrintf(dPoll, "S[%d-%d] (curConfig=%v) (isLeader=%t)", kv.gid, kv.me, kv.config, isLeader)
-// 		nextConfigNum := -1
-// 		if len(kv.unconfigured) == 0 {
-// 			nextConfigNum = kv.config.Num + 1
-// 		} else {
-// 			nextConfigNum = kv.unconfigured[len(kv.unconfigured)-1].Num + 1
-// 		}
-// 		kv.mu.Unlock()
-// 		newConfig := kv.shardclerk.Query(nextConfigNum)
-// 		kv.mu.Lock()
-// 		if newConfig.Num == nextConfigNum {
-// 			kv.unconfigured = append(kv.unconfigured, newConfig)
-// 		}
-// 		DPrintf(dPoll, "S[%d-%d] (unconfigured=%v)", kv.gid, kv.me, kv.unconfigured)
-// 		kv.mu.Unlock()
-
-// 		time.Sleep(100 * time.Millisecond)
-// 	}
-// }
 
 func (kv *ShardKV) poll() {
 	term := 0
@@ -536,16 +467,16 @@ func (kv *ShardKV) poll() {
 
 }
 
-func (kv *ShardKV) alive() {
-	for {
-		time.Sleep(500 * time.Millisecond)
-		term, isLeader := kv.rf.GetState()
-		DPrintf(dAlive, "S[%d-%d] (isLeader=%t) (term=%d)", kv.gid, kv.me, isLeader, term)
-		kv.mu.Lock()
-		DPrintf(dAlive, "S[%d-%d] * (isLeader=%t) (term=%d)", kv.gid, kv.me, isLeader, term)
-		kv.mu.Unlock()
-	}
-}
+// func (kv *ShardKV) alive() {
+// 	for {
+// 		time.Sleep(500 * time.Millisecond)
+// 		term, isLeader := kv.rf.GetState()
+// 		DPrintf(dAlive, "S[%d-%d] (isLeader=%t) (term=%d)", kv.gid, kv.me, isLeader, term)
+// 		kv.mu.Lock()
+// 		DPrintf(dAlive, "S[%d-%d] * (isLeader=%t) (term=%d)", kv.gid, kv.me, isLeader, term)
+// 		kv.mu.Unlock()
+// 	}
+// }
 
 //
 // the tester calls Kill() when a ShardKV instance won't
@@ -623,13 +554,12 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// TODO: Add tables for 1-NShard and for config (-1)
 	kv.index = 0
 	kv.config = shardctrler.Config{Num: 0}
-	kv.unconfigured = make([]shardctrler.Config, 0)
 
 	// You may need initialization code here.
 	go kv.applier()
 	go kv.snapshot()
 	go kv.poll()
-	go kv.alive()
+	// go kv.alive()
 	// go kv.reconfigure()
 
 	return kv
