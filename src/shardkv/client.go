@@ -87,7 +87,7 @@ func (ck *Clerk) Get(key string) string {
 		ck.config = ck.sm.Query(-1)
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
-		// fmt.Printf("C[%d] new CONFIG (config=%v) (shard=%d) (gid=%d)\n", ck.id, ck.config, shard, gid)
+		fmt.Printf("C[%d] new CONFIG GET (config=%v) (shard=%d) (gid=%d)\n", ck.id, ck.config, shard, gid)
 
 		if servers, ok := ck.config.Groups[gid]; ok {
 			// fmt.Printf("C[%d] try (servers=%v)\n", ck.id, servers)
@@ -130,7 +130,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 	for {
 		ck.config = ck.sm.Query(-1)
-		fmt.Printf("C[%d] new CONFIG (config=%v)\n", ck.id, ck.config)
+		fmt.Printf("C[%d] new CONFIG PUTAPPEND (config=%v)\n", ck.id, ck.config)
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {

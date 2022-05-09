@@ -84,6 +84,7 @@ func (ck *Clerk) Leave(gids []int) {
 	args.GIDs = gids
 	args.Id = ck.id
 	args.ReqId = ck.reqId
+	fmt.Println("CTRLR LEAVE ", gids)
 
 	for {
 		// try each known server.
