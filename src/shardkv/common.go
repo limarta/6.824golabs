@@ -49,7 +49,7 @@ type GetReply struct {
 }
 
 type TransferArgs struct {
-	ConfigNum int
+	Shard int
 }
 
 type TransferReply struct {
