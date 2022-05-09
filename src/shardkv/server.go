@@ -232,13 +232,13 @@ func (kv *ShardKV) applier() {
 				if op.Operation == "Get" {
 					DPrintf(dApply, "S[%d-%d] (index=%d) (term=%d) (op=%v k=%s n=%d)",
 						kv.gid, kv.me, msg.CommandIndex, msg.CommandTerm, op.Operation, op.Key, op.ReqId)
-					DPrintf(dApply, "S[%d-%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (index=%d) (term=%d) (data=%v)",
-						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, op.Key, msg.CommandIndex, msg.CommandTerm, kv.data)
+					DPrintf(dApply, "S[%d-%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (index=%d) (term=%d) (data=%v) (dup=%v)",
+						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, op.Key, msg.CommandIndex, msg.CommandTerm, kv.data, kv.duplicate)
 				} else if op.Operation == "Put" || op.Operation == "Append" {
 					DPrintf(dApply, "S[%d-%d] (index=%d) (term=%d) (op=%v k=%s v=%s n=%d)",
 						kv.gid, kv.me, msg.CommandIndex, msg.CommandTerm, op.Operation, op.Key, op.Value, op.ReqId)
-					DPrintf(dApply, "S[%d-%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d) (data=%v)",
-						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm, kv.data)
+					DPrintf(dApply, "S[%d-%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d) (data=%v) (dup=%v)",
+						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm, kv.data, kv.duplicate)
 				} else if op.Operation == "Configure" {
 					// DPrintf(dApply, "S[%d] BEFORE (C=%d) (op=%s) (reqId=%d) (index=%d) (term=%d) (data=%v)",
 					// 	kv.me, op.Id, op.Operation, op.ReqId, msg.CommandIndex, msg.CommandTerm, kv.data)
@@ -259,7 +259,9 @@ func (kv *ShardKV) applier() {
 					if kv.config.Num+1 != op.Config.Num {
 						DPrintf(dApply, "S[%d-%d] CONFIGURE WRONG NUM (cur config=%v) (new config=%v) (dup=%v) (dup=%v)",
 							kv.gid, kv.me, kv.config, op.Config, kv.data, kv.duplicate)
-						panic("WRONG CONFIG NUM ")
+						kv.mu.Unlock()
+						continue
+						// panic("WRONG CONFIG NUM ")
 					}
 					DPrintf(dApply, "S[%d-%d] CONFIGURE (new config=%v) (cur config=%v) (data=%v) (dup=%v)", kv.gid, kv.me, op.Config, kv.config, kv.data, kv.duplicate)
 
@@ -312,7 +314,7 @@ func (kv *ShardKV) applier() {
 				if op.Operation == "Get" {
 					DPrintf(dApply, "S[%d-%d] AFTER (C=%d) (op=%s) (reqId=%d) (curConfig=%v) (shard=%d) (K=%s) (index=%d) (term=%d) (data=%v) (dup=%v)",
 						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, kv.config, op.Shard, op.Key, msg.CommandIndex, msg.CommandTerm, kv.data, kv.duplicate)
-				} else if op.Operation == "Put" {
+				} else if op.Operation == "Put" || op.Operation == "Append" {
 					DPrintf(dApply, "S[%d-%d] AFTER (C=%d) (op=%s) (reqId=%d) (curConfig=%v) (shard=%d) (K=%s) (V=%s) (index=%d) (term=%d) (data=%v) (dup=%v)",
 						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, kv.config, op.Shard, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm, kv.data, kv.duplicate)
 				} else if op.Operation == "Configure" {
