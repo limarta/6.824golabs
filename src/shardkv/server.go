@@ -204,6 +204,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	if kv.config.Shards[key2shard(cmd.Key)] != kv.gid {
 		kv.mu.Unlock()
+		DPrintf(dPutAppend, "S[%d-%d] skipped putAppend (op=%v)", kv.gid, kv.me, cmd)
 		reply.Err = ErrWrongGroup
 		return
 	}
@@ -334,13 +335,14 @@ func (kv *ShardKV) applier() {
 			var data map[int](map[string]string)
 			var duplicate map[int](map[int64]int)
 			var index int
-			// var config shardctrler.Config
-			if d.Decode(&data) != nil || d.Decode(&duplicate) != nil || d.Decode(&index) != nil {
+			var config shardctrler.Config
+			if d.Decode(&data) != nil || d.Decode(&duplicate) != nil || d.Decode(&index) != nil || d.Decode(&config) != nil {
 				DPrintf(dDecode, "[S%d] ERROR", kv.me)
 			} else {
 				kv.data = data
 				kv.duplicate = duplicate
 				kv.index = index
+				kv.config = config
 				DPrintf(dDecode, "[S%d] (index=%d) (data=%v) (dup=%v)", kv.me, index, data, duplicate)
 			}
 
@@ -415,6 +417,7 @@ func (kv *ShardKV) snapshot() {
 				e.Encode(kv.data)
 				e.Encode(kv.duplicate)
 				e.Encode(kv.index)
+				e.Encode(kv.config)
 				// May need to encode config, gid, clerks?
 				snapshot := w.Bytes()
 				kv.rf.Snapshot(kv.index, snapshot)

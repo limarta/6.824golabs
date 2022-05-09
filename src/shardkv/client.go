@@ -104,9 +104,9 @@ func (ck *Clerk) Get(key string) string {
 					fmt.Printf("C[%d] ErrWrongGROUP\n", ck.id)
 					break
 				}
+				fmt.Printf("C[%d] ErrWrongLEADER\n", ck.id)
 			}
 		}
-		fmt.Printf("C[%d] ErrWrongLEADER\n", ck.id)
 		time.Sleep(100 * time.Millisecond)
 		// ask controler for the latest configuration.
 	}
