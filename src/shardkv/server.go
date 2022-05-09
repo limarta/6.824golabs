@@ -401,7 +401,7 @@ func (kv *ShardKV) snapshot() {
 		for !kv.killed() {
 			kv.mu.Lock()
 
-			if kv.rf.RaftStateSize() >= 2*kv.maxraftstate && !kv.noSnapshot {
+			if kv.rf.RaftStateSize() >= kv.maxraftstate && !kv.noSnapshot {
 				DPrintf(dSnap, "S[%d-%d] (snapshot index=%d) (raftStateSize=%d) (max=%d) (data=%v) (duplicate=%v) (config=%v)",
 					kv.gid, kv.me, kv.index, kv.rf.RaftStateSize(), kv.maxraftstate, kv.data, kv.duplicate, kv.config)
 				// Snapshot = kv.data + kv.duplicate + index
@@ -460,7 +460,6 @@ func (kv *ShardKV) poll() {
 			kv.mu.Unlock()
 		} else {
 			DPrintf(dPoll, "HElp")
-			panic("Help! Polling!")
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

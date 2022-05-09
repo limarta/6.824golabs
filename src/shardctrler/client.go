@@ -6,7 +6,6 @@ package shardctrler
 
 import (
 	"crypto/rand"
-	"fmt"
 	"math/big"
 	"time"
 
@@ -63,7 +62,7 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	args.Servers = servers
 	args.Id = ck.id
 	args.ReqId = ck.reqId
-	fmt.Println("CTRLR JOIN: ", servers)
+	// fmt.Println("CTRLR JOIN: ", servers)
 
 	for {
 		// try each known server.
@@ -84,7 +83,7 @@ func (ck *Clerk) Leave(gids []int) {
 	args.GIDs = gids
 	args.Id = ck.id
 	args.ReqId = ck.reqId
-	fmt.Println("CTRLR LEAVE ", gids)
+	// fmt.Println("CTRLR LEAVE ", gids)
 
 	for {
 		// try each known server.

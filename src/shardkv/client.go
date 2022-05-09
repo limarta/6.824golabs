@@ -10,7 +10,6 @@ package shardkv
 
 import (
 	"crypto/rand"
-	"fmt"
 	"math/big"
 	"time"
 
@@ -87,7 +86,7 @@ func (ck *Clerk) Get(key string) string {
 		ck.config = ck.sm.Query(-1)
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
-		fmt.Printf("C[%d] new CONFIG GET (config=%v) (shard=%d) (gid=%d)\n", ck.id, ck.config, shard, gid)
+		// fmt.Printf("C[%d] new CONFIG GET (config=%v) (shard=%d) (gid=%d)\n", ck.id, ck.config, shard, gid)
 
 		if servers, ok := ck.config.Groups[gid]; ok {
 			// fmt.Printf("C[%d] try (servers=%v)\n", ck.id, servers)
@@ -97,14 +96,14 @@ func (ck *Clerk) Get(key string) string {
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && (reply.Err == OK) {
-					fmt.Println("FINISHED GET")
+					// fmt.Println("FINISHED GET")
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
-					fmt.Printf("C[%d] ErrWrongGROUP\n", ck.id)
+					// fmt.Printf("C[%d] ErrWrongGROUP\n", ck.id)
 					break
 				}
-				fmt.Printf("C[%d] ErrWrongLEADER\n", ck.id)
+				// fmt.Printf("C[%d] ErrWrongLEADER\n", ck.id)
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -130,7 +129,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 	for {
 		ck.config = ck.sm.Query(-1)
-		fmt.Printf("C[%d] new CONFIG PUTAPPEND (config=%v)\n", ck.id, ck.config)
+		// fmt.Printf("C[%d] new CONFIG PUTAPPEND (config=%v)\n", ck.id, ck.config)
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
@@ -140,15 +139,15 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
 				if ok && reply.Err == OK {
-					fmt.Println("FINISHED PUT")
+					// fmt.Println("FINISHED PUT")
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
-					fmt.Printf("C[%d] received ErrWrongGroup (op=%v) (reqId=%d) (K=%s) (V=%s)\n", ck.id, op, args.ReqId, key, value)
+					// fmt.Printf("C[%d] received ErrWrongGroup (op=%v) (reqId=%d) (K=%s) (V=%s)\n", ck.id, op, args.ReqId, key, value)
 					break
 				}
 				// ... not ok, or ErrWrongLeader
-				fmt.Printf("C[%d] received ErrWrongLEADER (op=%v) (reqId=%d) (K=%s) (V=%s)\n", ck.id, op, args.ReqId, key, value)
+				// fmt.Printf("C[%d] received ErrWrongLEADER (op=%v) (reqId=%d) (K=%s) (V=%s)\n", ck.id, op, args.ReqId, key, value)
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
