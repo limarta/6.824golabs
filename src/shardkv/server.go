@@ -114,16 +114,16 @@ func (kv *ShardKV) Request(cmd Op) Err {
 
 	if isLeader {
 		if cmd.Operation == "Get" {
-			DPrintf(dRequest, "S[%d-%d] GET (isLeader=%t) (C=%d) (reqId=%d) (K=%s) (index=%d) (term=%d)",
+			DPrintf(dRequest, "S[%d-%d] starting GET (isLeader=%t) (C=%d) (reqId=%d) (K=%s) (index=%d) (term=%d)",
 				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, index, term)
 		} else if cmd.Operation == "Put" {
-			DPrintf(dRequest, "S[%d-%d]  PUT (isLeader=%t) (C=%d) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d)",
+			DPrintf(dRequest, "S[%d-%d]  starting PUT (isLeader=%t) (C=%d) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d)",
 				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term)
 		} else if cmd.Operation == "Append" {
-			DPrintf(dRequest, "S[%d-%d] APPEND (isLeader=%t) (C=%d) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d)",
+			DPrintf(dRequest, "S[%d-%d] starting APPEND (isLeader=%t) (C=%d) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d)",
 				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Key, cmd.Value, index, term)
 		} else if cmd.Operation == "Configure" {
-			DPrintf(dRequest, "S[%d-%d] CONFIGURE (isLeader=%t) (C=%d) (reqId=%d) (config=%v) (index=%d) (term=%d)",
+			DPrintf(dRequest, "S[%d-%d] starting CONFIGURE (isLeader=%t) (C=%d) (reqId=%d) (config=%v) (index=%d) (term=%d)",
 				kv.gid, kv.me, isLeader, cmd.Id, cmd.ReqId, cmd.Config, index, term)
 
 		}
@@ -150,7 +150,7 @@ func (kv *ShardKV) Request(cmd Op) Err {
 				return OK
 			}
 			kv.mu.Unlock()
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
 	return ErrWrongLeader
@@ -165,11 +165,13 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		Shard:     key2shard(args.Key)}
 	kv.mu.Lock()
 	if kv.config.Shards[key2shard(cmd.Key)] != kv.gid {
+		DPrintf(dGet, "S[%d-%d] skipped get (op=%v)", kv.gid, kv.me, cmd)
 		kv.mu.Unlock()
 		reply.Err = ErrWrongGroup
 		return
 	}
 	kv.mu.Unlock()
+	DPrintf(dGet, "S[%d-%d] submitting GET to Raft (op=%v)", kv.gid, kv.me, cmd)
 	err := kv.Request(cmd)
 	reply.Err = err
 	if err == OK {
@@ -225,12 +227,12 @@ func (kv *ShardKV) applier() {
 			if op, ok := msg.Command.(Op); ok {
 				kv.mu.Lock()
 				if op.Operation == "Get" {
-					DPrintf(dReceived, "S[%d-%d] (index=%d) (term=%d) (op=%v k=%s n=%d)",
+					DPrintf(dApply, "S[%d-%d] (index=%d) (term=%d) (op=%v k=%s n=%d)",
 						kv.gid, kv.me, msg.CommandIndex, msg.CommandTerm, op.Operation, op.Key, op.ReqId)
 					DPrintf(dApply, "S[%d-%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (index=%d) (term=%d) (data=%v)",
 						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, op.Key, msg.CommandIndex, msg.CommandTerm, kv.data)
 				} else if op.Operation == "Put" || op.Operation == "Append" {
-					DPrintf(dReceived, "S[%d-%d] (index=%d) (term=%d) (op=%v k=%s v=%s n=%d)",
+					DPrintf(dApply, "S[%d-%d] (index=%d) (term=%d) (op=%v k=%s v=%s n=%d)",
 						kv.gid, kv.me, msg.CommandIndex, msg.CommandTerm, op.Operation, op.Key, op.Value, op.ReqId)
 					DPrintf(dApply, "S[%d-%d] BEFORE (C=%d) (op=%s) (reqId=%d) (K=%s) (V=%s) (index=%d) (term=%d) (data=%v)",
 						kv.gid, kv.me, op.Id, op.Operation, op.ReqId, op.Key, op.Value, msg.CommandIndex, msg.CommandTerm, kv.data)
@@ -326,7 +328,7 @@ func (kv *ShardKV) applier() {
 			// Read snapshot = data + duplicate + index
 			// Set values
 			kv.mu.Lock()
-			DPrintf(dReceived, "S[%d] SNAPSHOT (index=%d) (term=%d)", kv.me, msg.SnapshotIndex, msg.SnapshotTerm)
+			DPrintf(dSnap, "S[%d] SNAPSHOT (index=%d) (term=%d)", kv.me, msg.SnapshotIndex, msg.SnapshotTerm)
 			r := bytes.NewBuffer(msg.Snapshot)
 			d := labgob.NewDecoder(r)
 			var data map[int](map[string]string)
@@ -447,6 +449,7 @@ func (kv *ShardKV) reconfigure() {
 			} else {
 				DPrintf(dReconfig, "HElp")
 			}
+			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 		kv.mu.Unlock()
@@ -463,6 +466,7 @@ func (kv *ShardKV) poll() {
 			kv.unconfigured = make([]shardctrler.Config, 0)
 			term = cur_term
 			kv.mu.Unlock()
+			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 		DPrintf(dPoll, "S[%d-%d] (curConfig=%v) (isLeader=%t)", kv.gid, kv.me, kv.config, isLeader)
@@ -472,7 +476,9 @@ func (kv *ShardKV) poll() {
 		} else {
 			nextConfigNum = kv.unconfigured[len(kv.unconfigured)-1].Num + 1
 		}
+		kv.mu.Unlock()
 		newConfig := kv.shardclerk.Query(nextConfigNum)
+		kv.mu.Lock()
 		if newConfig.Num == nextConfigNum {
 			kv.unconfigured = append(kv.unconfigured, newConfig)
 		}
